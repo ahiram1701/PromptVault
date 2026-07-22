@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0c1020" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f4f6fb" media="(prefers-color-scheme: light)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>PromptVault</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="back-to-list" type="button" class="topbar-icon-btn topbar-back" aria-label="Volver a la lista" hidden>
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+      </button>
+      <h1 class="topbar-title">PromptVault</h1>
+      <span id="status" class="status" aria-live="polite">cargando…</span>
+      <button id="theme-toggle" type="button" class="topbar-icon-btn" aria-label="Cambiar tema" title="Cambiar tema">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-5.4-5.4c0-2.1 1.2-3.92 2.96-4.8A8.8 8.8 0 0 0 12 3z"/></svg>
+      </button>
+      <button id="more-menu" type="button" class="topbar-icon-btn topbar-more" aria-label="Más opciones" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 8a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm0 6a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+      </button>
+    </header>
+
+    <main id="app" class="app" data-view="list" hidden>
+      <aside class="sidebar" aria-label="Lista de prompts">
+        <div class="sidebar-toolbar">
+          <button id="new-prompt" type="button" class="btn btn-primary">+ Nuevo</button>
+          <button id="backup-now" type="button" class="btn">Respaldar</button>
+        </div>
+
+        <div class="filters" id="filters">
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input
+              id="search"
+              type="search"
+              class="input"
+              placeholder="Buscar (fuzzy)…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="filter-toggle" type="button" class="filter-toggle" aria-label="Mostrar u ocultar filtros" title="Filtros">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+            </button>
+          </div>
+          <div class="filter-advanced">
+            <select id="tag-filter" class="input" aria-label="Filtrar por tag">
+              <option value="">Todos los tags</option>
+            </select>
+            <label class="check">
+              <input id="show-favorites" type="checkbox" />
+              <span>Solo favoritos</span>
+            </label>
+          </div>
+        </div>
+
+        <ul id="prompt-list" class="prompt-list" aria-label="Prompts"></ul>
+
+        <div class="sidebar-footer">
+          <button id="export-excel" type="button" class="btn btn-ghost">Exportar Excel</button>
+          <button id="import-excel" type="button" class="btn btn-ghost">Importar Excel</button>
+          <input id="import-excel-file" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden />
+        </div>
+      </aside>
+
+      <section class="editor" aria-label="Editor de prompt">
+        <div id="empty-editor" class="empty-editor">
+          <p>Selecciona un prompt de la izquierda o crea uno nuevo con <strong>+ Nuevo</strong>.</p>
+        </div>
+
+        <form id="editor-form" class="editor-form" hidden>
+          <div class="editor-header">
+            <input
+              id="prompt-title"
+              type="text"
+              class="input title-input"
+              placeholder="Título del prompt…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <label class="check fav">
+              <input id="prompt-favorite" type="checkbox" />
+              <span>★ Favorito</span>
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field-label">Tags</span>
+            <div class="tags-field" id="tags-field">
+              <input
+                id="prompt-tags"
+                type="text"
+                class="tags-input"
+                placeholder="añadir tag…"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+          </label>
+
+          <label class="field grow">
+            <span class="field-label">Cuerpo del prompt</span>
+            <textarea
+              id="prompt-body"
+              class="textarea"
+              placeholder="Escribe aquí tu prompt…"
+              spellcheck="false"
+            ></textarea>
+          </label>
+
+          <div class="editor-footer">
+            <button id="copy-body" type="button" class="btn btn-ghost" title="Copiar cuerpo al portapapeles">📋 Copiar</button>
+            <button id="delete-prompt" type="button" class="btn btn-danger">Eliminar</button>
+            <span id="save-hint" class="save-hint" aria-live="polite"></span>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <button id="new-fab" type="button" class="new-fab" aria-label="Nuevo prompt" hidden>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
+    </button>
+
+    <!-- Puter.js v2 desde CDN (en próximas versiones se valora vendorizar). -->
+    <script src="https://js.puter.com/v2/"></script>
+    <script src="./vendor/fuse.min.js"></script>
+    <script src="./vendor/xlsx.full.min.js"></script>
+    <!-- Capa de persistencia: debe cargarse antes que app.js. -->
+    <script src="./storage.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

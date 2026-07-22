@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PromptVault Debug</title>
+<style>
+  :root { --bg: #0f1115; --bg-elev: #161a22; --border: #2a2f3a; --text: #e6e8ee; --text-dim: #9aa3b2; --accent: #7c9cff; --danger: #ff6b6b; --ok: #5dd39e; --warn: #f5a524; }
+  [data-theme="light"] { --bg: #f4f6fb; --bg-elev: #ffffff; --border: #d0d4dd; --text: #1a1d24; --text-dim: #6b7385; --accent: #4a6cf7; --danger: #d32f2f; --ok: #2e7d32; --warn: #e67e22; }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; line-height: 1.5; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); }
+  .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .status-ok { color: var(--ok); }
+  .status-warn { color: var(--warn); }
+  .status-danger { color: var(--danger); }
+  .btn { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 14px; margin-right: 8px; margin-top: 4px; }
+  .btn-danger { background: rgba(255,107,107,0.12); color: var(--danger); border-color: var(--danger); }
+  .btn-primary { background: var(--accent); color: #0c1020; border-color: var(--accent); font-weight: 600; }
+  .actions { margin-top: 16px; }
+  #log { margin-top: 12px; font-size: 13px; font-family: monospace; white-space: pre-wrap; color: var(--text-dim); }
+</style>
+</head>
+<body>
+<div style="max-width:720px;margin:0 auto">
+  <h1>🔧 PromptVault Debug</h1>
+
+  <div class="card">
+    <h2>Almacenamiento local</h2>
+    <div class="row"><span>Keys en localStorage</span><span class="value" id="ls-keys">—</span></div>
+    <div class="row"><span>Tamaño total (aprox)</span><span class="value" id="ls-size">—</span></div>
+    <div class="row"><span>Prompts guardados</span><span class="value" id="ls-prompts">—</span></div>
+    <div class="row"><span>Último índice</span><span class="value" id="ls-index">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Puter.js</h2>
+    <div class="row"><span>window.puter definido</span><span class="value" id="puter-defined">—</span></div>
+    <div class="row"><span>puter.fs operativo</span><span class="value" id="puter-fs">—</span></div>
+    <div class="row"><span>Usuario autenticado</span><span class="value" id="puter-auth">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Entorno</h2>
+    <div class="row"><span>User-Agent</span><span class="value" id="ua">—</span></div>
+    <div class="row"><span>Tema actual</span><span class="value" id="theme">—</span></div>
+    <div class="row"><span>Resolución</span><span class="value" id="res">—</span></div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" id="refresh" type="button">Refrescar datos</button>
+    <button class="btn btn-danger" id="clear-cache" type="button">Borrar localStorage (promptvault:*)</button>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script src="./storage.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  function $(id) { return document.getElementById(id); }
+
+  function setText(id, text, cls) {
+    var el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'value' + (cls ? ' ' + cls : '');
+  }
+
+  function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  function scanStorage() {
+    var keys = [], size = 0, promptCount = 0, indexInfo = '—';
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf('promptvault') !== 0) continue;
+      keys.push(k);
+      var v = localStorage.getItem(k) || '';
+      size += (k.length + v.length) * 2; // aprox UTF-16
+      if (k.indexOf('promptvault:prompt:') === 0) promptCount++;
+      if (k === 'promptvault:index') {
+        try {
+          var idx = JSON.parse(v);
+          indexInfo = (idx.ids ? idx.ids.length : '?') + ' ids' + (idx.updatedAt ? ' · ' + idx.updatedAt.slice(0,16) : '');
+        } catch (_) {}
+      }
+    }
+    setText('ls-keys', keys.length);
+    setText('ls-size', fmtBytes(size));
+    setText('ls-prompts', promptCount);
+    setText('ls-index', indexInfo);
+  }
+
+  function scanPuter() {
+    var hasPuter = typeof window.puter !== 'undefined' && window.puter;
+    var hasFs = hasPuter && typeof window.puter.fs !== 'undefined' && window.puter.fs && typeof window.puter.fs.write === 'function';
+    var isAuth = hasPuter && !!window.puter.auth && !!window.puter.auth.isAuthenticated && window.puter.auth.isAuthenticated();
+    setText('puter-defined', hasPuter ? 'Sí' : 'No', hasPuter ? 'status-ok' : 'status-danger');
+    setText('puter-fs', hasFs ? 'Sí' : 'No', hasFs ? 'status-ok' : 'status-warn');
+    setText('puter-auth', isAuth ? 'Sí' : 'No', isAuth ? 'status-ok' : 'status-warn');
+  }
+
+  function scanEnv() {
+    setText('ua', navigator.userAgent.slice(0, 80) + '…');
+    var t = document.documentElement.getAttribute('data-theme') || 'dark';
+    setText('theme', t);
+    setText('res', window.innerWidth + '×' + window.innerHeight);
+  }
+
+  function refresh() {
+    scanStorage();
+    scanPuter();
+    scanEnv();
+  }
+
+  function clearCache() {
+    if (!confirm('¿Borrar TODOS los datos locales de PromptVault? Esta acción no se puede deshacer.')) return;
+    var removed = 0;
+    var keys = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf('promptvault') === 0) keys.push(k);
+    }
+    keys.forEach(function (k) { localStorage.removeItem(k); removed++; });
+    $('log').textContent = 'Eliminados ' + removed + ' keys de localStorage.';
+    refresh();
+  }
+
+  $('refresh').addEventListener('click', refresh);
+  $('clear-cache').addEventListener('click', clearCache);
+
+  // Tema
+  var saved = null;
+  try { saved = localStorage.getItem('promptvault-theme'); } catch (e) {}
+  if (saved === 'light' || saved === 'dark') document.documentElement.setAttribute('data-theme', saved);
+
+  refresh();
+})();
+</script>
+</body>
+</html>

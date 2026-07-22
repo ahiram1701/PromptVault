@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PromptVault Tests</title>
+<style>
+  :root { --bg: #0f1115; --text: #e6e8ee; --ok: #5dd39e; --danger: #ff6b6b; --border: #2a2f3a; }
+  [data-theme="light"] { --bg: #f4f6fb; --text: #1a1d24; --ok: #2e7d32; --danger: #d32f2f; --border: #d0d4dd; }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; line-height: 1.5; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  .summary { font-size: 14px; margin-bottom: 16px; color: var(--text); opacity: 0.8; }
+  .test { border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin-bottom: 8px; font-size: 14px; }
+  .test.pass { border-left: 4px solid var(--ok); }
+  .test.fail { border-left: 4px solid var(--danger); }
+  .test .label { font-weight: 600; }
+  .test .msg { color: var(--text); opacity: 0.75; font-size: 12px; margin-top: 4px; }
+  #results { max-width: 720px; margin: 0 auto; }
+  .btn { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 14px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="results">
+  <h1>PromptVault Tests</h1>
+  <p class="summary">Tests autocontenidos de storage.js (modo localStorage).</p>
+  <button class="btn" id="run" type="button">Ejecutar tests</button>
+  <div id="log" style="margin-top:12px"></div>
+</div>
+
+<script src="./storage.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var logEl = document.getElementById('log');
+  var pass = 0, fail = 0;
+
+  function assert(cond, msg) {
+    if (!cond) throw new Error(msg || 'assertion failed');
+  }
+
+  function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+  function log(name, ok, detail) {
+    var div = document.createElement('div');
+    div.className = 'test ' + (ok ? 'pass' : 'fail');
+    div.innerHTML = '<span class="label">' + (ok ? '✓' : '✗') + ' ' + name + '</span>' +
+      (detail ? '<div class="msg">' + detail + '</div>' : '');
+    logEl.appendChild(div);
+  }
+
+  async function runTests() {
+    logEl.innerHTML = '';
+    pass = 0; fail = 0;
+
+    // Limpiar localStorage de prueba
+    var keys = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf('promptvault') === 0) keys.push(k);
+    }
+    keys.forEach(function (k) { localStorage.removeItem(k); });
+
+    var storage = window.PromptVaultStorage;
+
+    // Test 1: loadAll vacío
+    try {
+      var data = await storage.loadAll('local');
+      assert(data && Array.isArray(data.items), 'items no es array');
+      assert(data.items.length === 0, 'items no está vacío');
+      assert(data.index && data.index.count === 0, 'index count no es 0');
+      log('loadAll devuelve array vacío al inicio', true);
+      pass++;
+    } catch (e) { log('loadAll devuelve array vacío al inicio', false, e.message); fail++; }
+
+    // Test 2: saveAll + loadAll redondeo
+    try {
+      var id1 = storage.newId();
+      var items = [{ id: id1, title: 'Test A', body: 'body', tags: ['t1'], favorite: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' }];
+      var res = await storage.saveAll(items, 'local');
+      assert(res && res.count === 1, 'count no es 1: ' + JSON.stringify(res));
+      var loaded = await storage.loadAll('local');
+      assert(loaded.items.length === 1, 'loaded length no es 1');
+      assert(loaded.items[0].title === 'Test A', 'title no coincide');
+      log('saveAll guarda y loadAll recupera', true);
+      pass++;
+    } catch (e) { log('saveAll guarda y loadAll recupera', false, e.message); fail++; }
+
+    // Test 3: diff — re-guardar igual no escribe
+    try {
+      var before = await storage.loadAll('local');
+      var res2 = await storage.saveAll(before.items, 'local');
+      assert(res2.count === 0, 'diff debería devolver 0, devolvió ' + res2.count);
+      log('saveAll diff evita re-escribir iguales', true);
+      pass++;
+    } catch (e) { log('saveAll diff evita re-escribir iguales', false, e.message); fail++; }
+
+    // Test 4: backup crea snapshot
+    try {
+      var bak = await storage.backup('local');
+      assert(bak && bak.copies >= 1, 'copies < 1');
+      assert(bak.snapshot && Array.isArray(bak.snapshot.items), 'snapshot sin items');
+      assert(bak.snapshot.items.length === 1, 'snapshot items length no es 1');
+      log('backup crea snapshot correctamente', true);
+      pass++;
+    } catch (e) { log('backup crea snapshot correctamente', false, e.message); fail++; }
+
+    // Test 5: sanitizePrompt trunca y limpia
+    try {
+      var raw = { id: 'x', title: 'a'.repeat(600), body: 'b'.repeat(120000), tags: ['uno','dos','tres'], favorite: 'yes' };
+      // sanitizePrompt no está expuesto directamente, pero saveAll lo aplica.
+      var items2 = [Object.assign({}, raw, { createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' })];
+      await storage.saveAll(items2, 'local');
+      var loaded2 = await storage.loadAll('local');
+      var found = loaded2.items.find(function (it) { return it.id === 'x'; });
+      assert(found, 'no encontrado tras save');
+      assert(found.title.length === 500, 'title no truncado a 500: ' + found.title.length);
+      assert(found.body.length === 100000, 'body no truncado a 100K: ' + found.body.length);
+      assert(found.favorite === true, 'favorite no convertido a boolean');
+      log('sanitizePrompt trunca y limpia correctamente', true);
+      pass++;
+    } catch (e) { log('sanitizePrompt trunca y limpia correctamente', false, e.message); fail++; }
+
+    // Test 6: deduplicación de IDs en saveAll
+    try {
+      var dupId = storage.newId();
+      var dups = [
+        { id: dupId, title: 'A', body: '', tags: [], favorite: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' },
+        { id: dupId, title: 'B', body: '', tags: [], favorite: false, createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' }
+      ];
+      await storage.saveAll(dups, 'local');
+      var loaded3 = await storage.loadAll('local');
+      var count = loaded3.items.filter(function (it) { return it.id === dupId; }).length;
+      assert(count === 1, 'duplicados no deduplicados: ' + count);
+      log('saveAll deduplica IDs repetidos', true);
+      pass++;
+    } catch (e) { log('saveAll deduplica IDs repetidos', false, e.message); fail++; }
+
+    // Test 7: delete elimina del backend
+    try {
+      var itemsBefore = (await storage.loadAll('local')).items;
+      var toDelete = itemsBefore[0];
+      await storage.backends.local.delete(toDelete.id);
+      var itemsAfter = (await storage.loadAll('local')).items;
+      assert(itemsAfter.length === itemsBefore.length - 1, 'no se eliminó');
+      log('delete elimina del backend', true);
+      pass++;
+    } catch (e) { log('delete elimina del backend', false, e.message); fail++; }
+
+    // Resumen
+    var summary = document.createElement('div');
+    summary.className = 'summary';
+    summary.style.marginTop = '12px';
+    summary.style.fontWeight = '600';
+    summary.textContent = 'Resultado: ' + pass + ' pasaron, ' + fail + ' fallaron';
+    logEl.appendChild(summary);
+  }
+
+  document.getElementById('run').addEventListener('click', runTests);
+})();
+</script>
+</body>
+</html>
