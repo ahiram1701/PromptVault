@@ -1,12 +1,28 @@
 # PromptVault
 
-SPA estática para guardar y organizar prompts personales. Vive 100% en Puter: cada usuario entra con su cuenta y sus datos quedan aislados en su propio FS.
+SPA estática para guardar y organizar prompts personales. Cada usuario entra con su cuenta de Puter y sus datos quedan aislados en su propio FS. Sin sesión, funciona igual en modo local sobre `localStorage`.
+
+En producción: **https://witty-meerkat-9381.puter.site**
 
 ## Stack
 
-- HTML + CSS + JS puros (sin build step)
-- [Puter.js v2](https://js.puter.com/v2/) para FS y hosting
-- [Fuse.js](https://www.fusejs.io/) para búsqueda fuzzy
+- HTML + CSS + JS puros (sin build step, sin bundler, sin gestor de paquetes)
+- [Puter.js v2](https://js.puter.com/v2/) para FS, auth y hosting (vía CDN)
+- [Fuse.js](https://www.fusejs.io/) para búsqueda fuzzy (vendorizado)
+- [SheetJS](https://sheetjs.com/) para importar/exportar Excel (vendorizado)
+
+No hay tests, linters ni formateadores configurados.
+
+## Funcionalidades
+
+- Prompts con título, cuerpo, tags y favorito; guardado automático con debounce de 600 ms
+- Búsqueda fuzzy sobre título, cuerpo y tags
+- Filtro por tag y por favoritos
+- Tema oscuro/claro persistido
+- Importar y exportar en Excel
+- Respaldos automáticos al cargar, y manuales desde la UI
+- Conectar/desconectar de la cuenta de Puter desde la barra superior
+- UI móvil: vista única con swipe-to-go-back, swipe actions en la lista y bottom sheet
 
 ## Estructura
 
@@ -25,18 +41,15 @@ promptvault/
 
 ## Desarrollo local
 
-No requiere build. Para probar con datos reales hace falta abrir la app en Puter (`puter.hosting`) o servir la carpeta y tener un Puter local. Para iterar UI rápido:
+No requiere build. Basta servir la carpeta:
 
 ```
-cd promptvault
 python -m http.server 8080
 ```
 
-Luego abrir `http://localhost:8080`. La app detecta que no está en Puter y entra en modo demo con almacenamiento en `localStorage`.
+Luego abrir `http://localhost:8080`. Como Puter.js se carga por CDN, la app funciona igual fuera de Puter: arranca en modo local (`localStorage`) y el botón de nube de la barra superior permite iniciar sesión en tu cuenta de Puter y trabajar con datos reales. No hace falta un Puter local.
 
 ## Despliegue en Puter
-
-En producción: **https://witty-meerkat-9381.puter.site**
 
 Preparación (una sola vez):
 
@@ -55,15 +68,33 @@ El script arma un `dist/` limpio con solo lo que la app sirve, lo publica con el
 
 > No despliegues copiando y pegando el contenido de los archivos: ese camino reinterpreta los escapes `\uXXXX` del código fuente y ya corrompió `app.js` una vez. El CLI sube bytes desde disco.
 
-Cada visitante entra con su cuenta Puter y ve solo sus datos. Si abres la app sin sesión iniciada, arranca en modo local y aparece un botón de nube en la barra superior para conectar; al conectar te ofrece subir los prompts locales a tu cuenta.
+El sitio se sirve desde `/Ahiram1701/Public/promptvault`. Ojo: el CLI hace despliegues versionados —cada deploy sube a su propia carpeta y reapunta el subdominio—, así que tras el primer `deploy.ps1` la ruta de origen cambiará. Los datos no se ven afectados: viven en `~/PromptVault/`, fuera del directorio del sitio.
 
 ## Modelo de datos
 
-- Un archivo por prompt: `~/prompts/<uuid>.json`
-- Índice: `~/prompts/index.json` (lista resumida: id, título, tags, favorito, fecha)
-- Respaldo automático: `~/Backups/prompts-<timestamp>.json`
-- Descarga local: botón en la UI exporta un JSON portable
+Cada prompt es un objeto JSON:
+
+```js
+{ id, title, body, tags: string[], favorite: boolean, createdAt, updatedAt }
+```
+
+`storage.js` expone `window.PromptVaultStorage` con dos backends intercambiables, elegidos en tiempo de ejecución según haya sesión de Puter o no.
+
+**En Puter** (`~/PromptVault/`):
+
+- `prompts/<id>.json` — un archivo por prompt
+- `prompts/index.json` — `{ ids: [], updatedAt }`
+- `Backups/<iso-stamp>/manifest.json` + `items.json`
+
+**En localStorage** (prefijo `promptvault:`):
+
+- `promptvault:prompt:<id>` — un prompt
+- `promptvault:index` — `{ ids: [], updatedAt }`
+- `promptvault:backup` — último snapshot
+- `promptvault:backups` — metadatos de los últimos 5 respaldos
+
+Al conectar una cuenta de Puter teniendo prompts locales, la app ofrece fusionarlos: unión por `id`, y ante colisión gana el `updatedAt` más reciente. Nunca borra nada de `localStorage`.
 
 ## Estado
 
-v0.1 — scaffold inicial. Persistencia y UI completa en propuestas siguientes.
+Funcional. Persistencia dual, UI completa (escritorio y móvil), import/export Excel y conexión a Puter desde la interfaz.
