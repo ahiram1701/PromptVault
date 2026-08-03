@@ -13,11 +13,13 @@ SPA estática para guardar y organizar prompts personales. Vive 100% en Puter: c
 ```
 promptvault/
 ├── index.html        # entry point
-├── app.js            # UI + lógica + persistencia
+├── app.js            # UI + lógica
+├── storage.js        # persistencia (backends puter / local)
 ├── styles.css        # tema oscuro, responsive
+├── deploy.ps1        # despliegue a Puter
 ├── vendor/
-│   ├── puter.js      # SDK de Puter (descargado o CDN)
-│   └── fuse.min.js   # búsqueda fuzzy
+│   ├── fuse.min.js       # búsqueda fuzzy
+│   └── xlsx.full.min.js  # import/export Excel
 └── .gitignore
 ```
 
@@ -34,9 +36,26 @@ Luego abrir `http://localhost:8080`. La app detecta que no está en Puter y entr
 
 ## Despliegue en Puter
 
-1. Subir carpeta a Puter (drag & drop en `puter.hosting` o `puter.fs.writeFile`).
-2. Crear subdomain (ej: `promptvault.puter.site`).
-3. Listo. Cada visitante entra con su cuenta Puter y ve sus datos.
+En producción: **https://witty-meerkat-9381.puter.site**
+
+Preparación (una sola vez):
+
+```
+npm install -g @heyputer/cli
+puter login
+```
+
+Desplegar:
+
+```
+./deploy.ps1
+```
+
+El script arma un `dist/` limpio con solo lo que la app sirve, lo publica con el CLI oficial y verifica por HTTP que cada archivo desplegado coincida con el local.
+
+> No despliegues copiando y pegando el contenido de los archivos: ese camino reinterpreta los escapes `\uXXXX` del código fuente y ya corrompió `app.js` una vez. El CLI sube bytes desde disco.
+
+Cada visitante entra con su cuenta Puter y ve solo sus datos. Si abres la app sin sesión iniciada, arranca en modo local y aparece un botón de nube en la barra superior para conectar; al conectar te ofrece subir los prompts locales a tu cuenta.
 
 ## Modelo de datos
 

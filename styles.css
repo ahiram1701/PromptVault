@@ -107,6 +107,9 @@ body {
 .topbar-icon-btn:active { background: var(--border); }
 .topbar-icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .topbar-back { display: none; } /* sólo en móvil (ver @media) */
+/* El ID gana a .topbar-icon-btn{display:inline-flex}, que anularía el [hidden] del navegador. */
+#puter-connect[hidden] { display: none; }
+.topbar-puter { color: var(--accent); } /* señal de llamada a la acción */
 
 /* ---------- layout principal ---------- */
 .app {

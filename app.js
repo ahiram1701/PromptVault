@@ -33,6 +33,7 @@
     emptyEditor: document.getElementById('empty-editor'),
     editorForm: document.getElementById('editor-form'),
     themeToggle: document.getElementById('theme-toggle'),
+    puterConnect: document.getElementById('puter-connect'),
     copyBody: document.getElementById('copy-body'),
     filterToggle: document.getElementById('filter-toggle'),
     filters: document.getElementById('filters')
@@ -52,6 +53,179 @@
 
   // ---------- helpers ----------
   function setStatus(text) { if (els.status) els.status.textContent = text; }
+
+  // ---------- conexión a Puter ----------
+  // ¿Está cargado el SDK con un fs usable? No dice nada sobre la sesión.
+  function puterAvailable() {
+    return (
+      typeof window.puter !== 'undefined' &&
+      !!window.puter &&
+      typeof window.puter.fs !== 'undefined' &&
+      !!window.puter.fs &&
+      typeof window.puter.fs.write === 'function' &&
+      typeof window.puter.fs.read === 'function'
+    );
+  }
+
+  // ¿Expone el SDK la API de auth? Los SDK antiguos pueden no tenerla.
+  function puterAuthApi() {
+    if (typeof window.puter === 'undefined' || !window.puter) return null;
+    return window.puter.auth || null;
+  }
+
+  function canCheckSignedIn() {
+    var auth = puterAuthApi();
+    return !!(auth && typeof auth.isSignedIn === 'function');
+  }
+
+  function puterSignedIn() {
+    if (!canCheckSignedIn()) return false;
+    try { return !!window.puter.auth.isSignedIn(); }
+    catch (_) { return false; }
+  }
+
+  // Única fuente de verdad del estado de conexión: texto de status + botón conectar.
+  function updateConnectionUI() {
+    var available = puterAvailable();
+    if (state.host === 'puter') {
+      setStatus('conectado a Puter');
+    } else if (available) {
+      setStatus('modo local (Puter no autenticado)');
+    } else {
+      setStatus('modo local (localStorage)');
+    }
+    if (els.puterConnect) {
+      els.puterConnect.hidden = (state.host === 'puter' || !available);
+    }
+  }
+
+  // Une por id; ante colisión gana el updatedAt más reciente (ISO ordena como string).
+  function mergeById(cloudItems, localItems) {
+    var byId = new Map();
+    (cloudItems || []).forEach(function (it) { if (it && it.id) byId.set(it.id, it); });
+    (localItems || []).forEach(function (it) {
+      if (!it || !it.id) return;
+      var existing = byId.get(it.id);
+      if (!existing) { byId.set(it.id, it); return; }
+      var a = existing.updatedAt || '';
+      var b = it.updatedAt || '';
+      if (b > a) byId.set(it.id, it);
+    });
+    return Array.from(byId.values());
+  }
+
+  // Re-render tras cambiar de backend. NO re-ejecuta bindEvents/bindKeyboardViewport:
+  // son de una sola vez y duplicarían todos los listeners.
+  function reloadAfterHostChange() {
+    state.fuse = buildFuse();
+    renderTagFilter();
+    renderList();
+    clearEditor();
+    updateConnectionUI();
+  }
+
+  async function connectPuter() {
+    if (state.host === 'puter') return;
+    if (!puterAvailable()) {
+      setStatus('Puter no disponible en este contexto');
+      return;
+    }
+    var auth = puterAuthApi();
+    if (!auth || typeof auth.signIn !== 'function') {
+      setStatus('Este SDK de Puter no permite iniciar sesión');
+      return;
+    }
+    // El debounce de 600 ms no debe escribir en localStorage a mitad del cambio.
+    cancelPendingSave();
+
+    // signIn() abre un popup: debe ser el primer await del handler para no
+    // perder el gesto de usuario (si no, el navegador bloquea la ventana).
+    try {
+      await auth.signIn();
+    } catch (err) {
+      var code = (err && (err.error || err.code)) || '';
+      if (code === 'auth_window_closed') return; // el usuario canceló
+      if (code === 'popup_blocked') {
+        setStatus('Permite las ventanas emergentes para iniciar sesión');
+      } else {
+        console.error('puter signIn error', err);
+        setStatus('No se pudo iniciar sesión en Puter');
+      }
+      return;
+    }
+
+    var localItems = state.items.slice();
+    setStatus('conectando a Puter…');
+    try {
+      // La caché de 30 s puede retener el resultado vacío del intento pre-login.
+      var puterBackend = window.PromptVaultStorage.backends && window.PromptVaultStorage.backends.puter;
+      if (puterBackend && typeof puterBackend._invalidateCache === 'function') {
+        puterBackend._invalidateCache();
+      }
+      var data = await window.PromptVaultStorage.loadAll('puter');
+      var cloudItems = (data && Array.isArray(data.items)) ? data.items : [];
+
+      var merge = false;
+      if (localItems.length > 0) {
+        merge = window.confirm(
+          'Tienes ' + localItems.length + ' prompt' + (localItems.length === 1 ? '' : 's') +
+          ' en modo local. ¿Subirlos a tu cuenta de Puter?'
+        );
+      }
+
+      // state.host debe cambiar ANTES de persistAll: persistAll lee state.host
+      // para elegir backend.
+      state.host = 'puter';
+      state.index = (data && data.index) ? data.index : null;
+      if (merge) {
+        state.items = mergeById(cloudItems, localItems);
+        await persistAll(true);
+      } else {
+        state.items = cloudItems;
+      }
+    } catch (err) {
+      console.error('connectPuter loadAll error', err);
+      state.host = 'local';
+      state.items = localItems;
+      updateConnectionUI();
+      setStatus('Error al conectar a Puter');
+      return;
+    }
+
+    reloadAfterHostChange();
+    haptic([20]);
+    try {
+      await window.PromptVaultStorage.backup('puter');
+    } catch (err) {
+      console.warn('auto-backup warning', err);
+    }
+  }
+
+  async function disconnectPuter() {
+    if (state.host !== 'puter') return;
+    if (!window.confirm('¿Cerrar sesión de Puter? Volverás al modo local.')) return;
+    cancelPendingSave();
+    var auth = puterAuthApi();
+    if (auth && typeof auth.signOut === 'function') {
+      try { auth.signOut(); }
+      catch (err) { console.warn('puter signOut warning', err); }
+    }
+    var puterBackend = window.PromptVaultStorage.backends && window.PromptVaultStorage.backends.puter;
+    if (puterBackend && typeof puterBackend._invalidateCache === 'function') {
+      puterBackend._invalidateCache();
+    }
+    state.host = 'local';
+    try {
+      var data = await window.PromptVaultStorage.loadAll('local');
+      state.items = (data && Array.isArray(data.items)) ? data.items : [];
+      state.index = (data && data.index) ? data.index : null;
+    } catch (err) {
+      console.error('disconnectPuter loadAll error', err);
+      state.items = [];
+      state.index = null;
+    }
+    reloadAfterHostChange();
+  }
 
   function setView(view) {
     if (!els.app) return;
@@ -94,7 +268,7 @@
     if (typeof navigator === 'undefined' || !navigator.vibrate) return;
     try {
       var p = pattern || [40];
-      // Respetar prefers-reduced-motion para no vibrar si el usuario lo desactiv\u00f3.
+      // Respetar prefers-reduced-motion para no vibrar si el usuario lo desactivó.
       if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
       navigator.vibrate(p);
     } catch (_) { /* ignore */ }
@@ -386,7 +560,7 @@
       setStatus('Respaldando…');
       const res = await window.PromptVaultStorage.backup(state.host);
       flashHint('Respaldo creado (' + (res && res.copies ? res.copies : '?') + ' copias)');
-      setStatus(state.host === 'puter' ? 'conectado a Puter' : 'modo local (localStorage)');
+      updateConnectionUI();
     } catch (err) {
       console.error('backup error', err);
       flashHint('Error en respaldo', true);
@@ -493,7 +667,7 @@
     return String(key || '')
       .toLowerCase()
       .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
+      .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]/g, '');
   }
 
@@ -646,6 +820,9 @@
       { label: 'Exportar Excel',  icon: '📊', run: function () { exportExcel(); } },
       { label: 'Importar Excel',  icon: '📊', run: function () { if (els.importExcelFile) els.importExcelFile.click(); } }
     ];
+    if (state.host === 'puter') {
+      actions.push({ label: 'Cerrar sesión de Puter', icon: '🚪', run: function () { disconnectPuter(); } });
+    }
     if (document.getElementById('more-menu-list') || document.getElementById('bottom-sheet')) {
       closeMoreMenu(); return;
     }
@@ -917,6 +1094,7 @@
     }
     if (els.backupBtn) els.backupBtn.addEventListener('click', backupNow);
     if (els.themeToggle) els.themeToggle.addEventListener('click', toggleTheme);
+    if (els.puterConnect) els.puterConnect.addEventListener('click', connectPuter);
     if (els.copyBody) els.copyBody.addEventListener('click', copyBodyToClipboard);
     // v0.7: auto-hide FAB al hacer scroll en la lista
     bindListScroll();
@@ -1219,16 +1397,12 @@
 
   // ---------- bootstrap ----------
   async function bootstrap() {
-    // Detectar Puter: intentamos operar si fs existe; el loadAll hará el probe real.
-    var hasPuter = (
-      typeof window.puter !== 'undefined' &&
-      window.puter &&
-      typeof window.puter.fs !== 'undefined' &&
-      window.puter.fs &&
-      typeof window.puter.fs.write === 'function' &&
-      typeof window.puter.fs.read === 'function'
-    );
-    state.host = hasPuter ? 'puter' : 'local';
+    // Detectar Puter. Si el SDK expone auth.isSignedIn() lo consultamos para
+    // evitar un loadAll condenado al fallo; si no, mantenemos el optimismo
+    // histórico y dejamos que el loadAll haga el probe real.
+    var hasPuter = puterAvailable();
+    var usePuter = hasPuter && (canCheckSignedIn() ? puterSignedIn() : true);
+    state.host = usePuter ? 'puter' : 'local';
     setStatus(state.host === 'puter' ? 'conectando a Puter…' : 'cargando datos locales…');
     try {
       const data = await window.PromptVaultStorage.loadAll(state.host);
@@ -1269,18 +1443,7 @@
       els.app.hidden = false;
       setView('list'); // explícito: al arrancar siempre lista
     }
-    var hasPuterAtEnd = (
-      typeof window.puter !== 'undefined' &&
-      window.puter &&
-      typeof window.puter.fs !== 'undefined'
-    );
-    if (state.host === 'puter') {
-      setStatus('conectado a Puter');
-    } else if (hasPuterAtEnd) {
-      setStatus('modo local (Puter no autenticado)');
-    } else {
-      setStatus('modo local (localStorage)');
-    }
+    updateConnectionUI();
     state.initialized = true;
     // respaldo automático silencioso al cargar (sólo si el backend elegido funciona)
     try {

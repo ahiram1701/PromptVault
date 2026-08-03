@@ -24,7 +24,21 @@ There are no tests, linters, or formatters configured in this repo.
 
 ## Deployment
 
-Deployed by uploading the folder to Puter (`puter.hosting`) and assigning a subdomain (e.g. `promptvault.puter.site`). Each visitor authenticates with their own Puter account and sees only their data.
+Live at **https://witty-meerkat-9381.puter.site** (served from `/Ahiram1701/Public/promptvault`).
+
+Deploy with the script, which stages a clean `dist/` and publishes it via the official Puter CLI:
+
+```bash
+./deploy.ps1
+```
+
+One-time setup: `npm install -g @heyputer/cli` then `puter login`. For CI, set `PUTER_AUTH_TOKEN` instead of logging in.
+
+`deploy.ps1` deploys only what `index.html` actually references (plus `debug.html` / `tests.html`); the dead backups (`app.full.js`, `app.js.v0.9.bak`, `.app.js.bak-pre-v0.9.3`) are deliberately excluded. It verifies over HTTP afterwards, comparing each file to its local copy modulo CRLF.
+
+**Do not deploy by pasting file contents through a tool that re-encodes text.** Doing so silently converts literal `\uXXXX` escapes in the source into the raw characters they denote — this already corrupted `app.js` once. The CLI uploads bytes from disk and is immune to it.
+
+Each visitor authenticates with their own Puter account and sees only their data.
 
 ## Script Load Order
 
@@ -46,7 +60,19 @@ Deployed by uploading the folder to Puter (`puter.hosting`) and assigning a subd
 - **`PuterBackend`** — Uses `global.puter.fs` (mkdir, read, write, delete, rename). Stores data under `~/PromptVault/prompts/`.
 - **`LocalBackend`** — Uses `localStorage`. Keys are prefixed with `promptvault:`.
 
-At runtime the host is auto-detected in `app.js` bootstrap: `'puter'` if `window.puter` is defined, otherwise `'local'`.
+At runtime the host is auto-detected in `app.js` bootstrap via `puterAvailable()` (is `puter.fs` usable?) and `puterSignedIn()` (`puter.auth.isSignedIn()`, when the SDK exposes it). If the SDK has no `auth.isSignedIn`, bootstrap stays optimistic and lets `loadAll` probe for real, falling back to `'local'` on a `PUTER_AUTH:` error.
+
+### Connecting / Disconnecting from Puter (`app.js`)
+
+`updateConnectionUI()` is the single source of truth for connection state: it sets the `#status` text and shows/hides the `#puter-connect` topbar button (hidden when already on Puter or when the SDK is absent). Call it instead of writing `#status` directly.
+
+- **`connectPuter()`** — bound to `#puter-connect`. `puter.auth.signIn()` **must be the first `await`** in the handler; any earlier `await` loses the user gesture and the browser blocks the popup. Handles `popup_blocked` and `auth_window_closed` distinctly. Then invalidates `PuterBackend._invalidateCache()` (its 30 s cache may hold the failed pre-auth result), loads the cloud, and — if local prompts exist — offers to merge them via `mergeById()` (union by `id`, latest `updatedAt` wins). `state.host` must be set to `'puter'` **before** `persistAll()`, which reads it to pick the backend. On failure it rolls back to `'local'` with the original items.
+- **`disconnectPuter()`** — pushed into the `openMoreMenu()` action list only when `state.host === 'puter'`.
+- **`reloadAfterHostChange()`** — re-renders after a backend switch. It must never call `bindEvents()` or `bindKeyboardViewport()`, which are one-shot and would double-bind every listener.
+
+Note `flashHint()` is useless for connection feedback: it writes to `#save-hint`, which lives inside `#editor-form` and is `hidden` whenever no prompt is selected. Use `setStatus()` / `updateConnectionUI()`.
+
+`.status` is `display: none` on mobile, so any connection affordance must be a button, not status text.
 
 The storage API consumed by `app.js` is:
 
