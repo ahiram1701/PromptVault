@@ -82,7 +82,12 @@ Write-Host "dist/ listo: $count archivos, $bytes bytes" -ForegroundColor DarkGra
 # --- 3. desplegar ----------------------------------------------------------
 Write-Host "Desplegando..." -ForegroundColor Cyan
 puter site deploy $dist $Subdomain
-if ($LASTEXITCODE -ne 0) { Write-Error "El despliegue falló (exit $LASTEXITCODE)." }
+# El CLI (0.1.2) puede abortar con un assertion failure de libuv al salir aunque
+# el despliegue haya ido bien, así que un exit code no-cero solo avisa: la
+# verificación por hash de abajo es la autoridad.
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Aviso: el CLI salió con código $LASTEXITCODE; decide la verificación." -ForegroundColor Yellow
+}
 
 # --- 4. verificar ----------------------------------------------------------
 if ($SkipVerify) {
@@ -93,17 +98,23 @@ if ($SkipVerify) {
 Write-Host "Verificando..." -ForegroundColor Cyan
 $bust = [guid]::NewGuid().ToString('N')
 $ok = $true
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$wc = New-Object System.Net.WebClient
+
+# Comparación a nivel de bytes. Nada de comparar texto: Get-Content sin
+# -Encoding lee ANSI mientras que la respuesta HTTP se decodifica como UTF-8,
+# y esa asimetría marca como distintos archivos que son idénticos.
 foreach ($f in $files) {
   $url = "https://$Subdomain.puter.site/$f`?cb=$bust"
   try {
-    # Comparar contra el archivo local normalizando CRLF -> LF, que es como
-    # Puter sirve el contenido.
-    $localText  = (Get-Content (Join-Path $root $f) -Raw) -replace "`r`n", "`n"
-    $remoteText = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content -replace "`r`n", "`n"
-    if ($localText -eq $remoteText) {
-      Write-Host "  OK   $f" -ForegroundColor Green
+    $localBytes  = [System.IO.File]::ReadAllBytes((Join-Path $root $f))
+    $remoteBytes = $wc.DownloadData($url)
+    $lh = [BitConverter]::ToString($sha.ComputeHash($localBytes))
+    $rh = [BitConverter]::ToString($sha.ComputeHash($remoteBytes))
+    if ($lh -eq $rh) {
+      Write-Host ("  OK   {0,-12} {1} bytes" -f $f, $localBytes.Length) -ForegroundColor Green
     } else {
-      Write-Host "  DIFF $f (local $($localText.Length) vs remoto $($remoteText.Length) chars)" -ForegroundColor Red
+      Write-Host ("  DIFF {0,-12} local {1} vs remoto {2} bytes" -f $f, $localBytes.Length, $remoteBytes.Length) -ForegroundColor Red
       $ok = $false
     }
   } catch {
@@ -111,6 +122,7 @@ foreach ($f in $files) {
     $ok = $false
   }
 }
+$wc.Dispose()
 
 if ($ok) {
   Write-Host "`nDesplegado y verificado: https://$Subdomain.puter.site" -ForegroundColor Green
