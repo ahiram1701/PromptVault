@@ -20,11 +20,11 @@ python -m http.server 8080
 
 Then open `http://localhost:8080`. The app detects it is not running inside Puter and enters demo mode using `localStorage`.
 
-There are no tests, linters, or formatters configured in this repo.
+There are no linters or formatters configured. Tests live in `tests.html` — a self-contained browser suite over `storage.js` in localStorage mode. Open `http://localhost:8080/tests.html` and press **Ejecutar tests**; every case must pass before deploying. Note the dev server sends no cache headers, so bump the port (or hard-reload) after editing a `.js`/`.css` file or the browser will happily re-run the old one.
 
 ## Deployment
 
-Live at **https://witty-meerkat-9381.puter.site** (served from `/Ahiram1701/Public/promptvault`).
+Live at **https://witty-meerkat-9381.puter.site**. Each `puter site deploy` creates a fresh `/Ahiram1701/Sites/witty-meerkat-9381/deployment (N)` and repoints the subdomain at it; `puter.hosting.get('witty-meerkat-9381').root_dir.path` tells you which one is live.
 
 Deploy with the script, which stages a clean `dist/` and publishes it via the official Puter CLI:
 
@@ -34,7 +34,9 @@ Deploy with the script, which stages a clean `dist/` and publishes it via the of
 
 One-time setup: `npm install -g @heyputer/cli` then `puter login`. For CI, set `PUTER_AUTH_TOKEN` instead of logging in.
 
-`deploy.ps1` deploys only what `index.html` actually references (plus `debug.html` / `tests.html`); the dead backups (`app.full.js`, `app.js.v0.9.bak`, `.app.js.bak-pre-v0.9.3`) are deliberately excluded. It verifies over HTTP afterwards, comparing each file to its local copy modulo CRLF.
+`deploy.ps1` deploys only what `index.html` actually references (plus `debug.html` / `tests.html`); the dead backups (`app.full.js`, `app.js.v0.9.bak`, `.app.js.bak-pre-v0.9.3`) are deliberately excluded. Afterwards it walks **every file in `dist/`, subdirectories included**, and SHA-256s it against the same path on the live site.
+
+**The Puter CLI flattens subdirectories.** Verified on both 0.1.2 and 0.2.0: deploying a tree uploads every file into the site root, so `vendor/xlsx.full.min.js` was served at `/xlsx.full.min.js` while `index.html` asked for `./vendor/xlsx.full.min.js` — a 404 that silently cost production both Excel import/export and fuzzy search. `deploy.ps1` therefore stages the vendored libs flat in `dist/` and rewrites those two `<script src>` paths **in the `dist/` copy only**; the repo keeps `vendor/`, so local dev is unaffected. The old verification loop only checked the six root files, which is why this shipped unnoticed — never narrow it back to a hardcoded list.
 
 **Do not deploy by pasting file contents through a tool that re-encodes text.** Doing so silently converts literal `\uXXXX` escapes in the source into the raw characters they denote — this already corrupted `app.js` once. The CLI uploads bytes from disk and is immune to it.
 
@@ -70,7 +72,7 @@ At runtime the host is auto-detected in `app.js` bootstrap via `puterAvailable()
 - **`disconnectPuter()`** — pushed into the `openMoreMenu()` action list only when `state.host === 'puter'`.
 - **`reloadAfterHostChange()`** — re-renders after a backend switch. It must never call `bindEvents()` or `bindKeyboardViewport()`, which are one-shot and would double-bind every listener.
 
-Note `flashHint()` is useless for connection feedback: it writes to `#save-hint`, which lives inside `#editor-form` and is `hidden` whenever no prompt is selected. Use `setStatus()` / `updateConnectionUI()`.
+Note `flashHint()` writes to `#save-hint`, which lives inside `#editor-form` and is hidden whenever no prompt is selected (and on the whole list view on mobile). It now falls back to `toast()` — a floating `#toast` element appended to `<body>` — whenever the inline hint is not visible, or whenever the message is an error. Pass `inlineOnly = true` for routine chatter (the autosave "Guardado") that should simply not be announced when the editor is off-screen. For connection state use `setStatus()` / `updateConnectionUI()` instead, which own the topbar.
 
 `.status` is `display: none` on mobile, so any connection affordance must be a button, not status text.
 
@@ -109,6 +111,20 @@ Each prompt is a JSON object:
 4. Calls `scheduleSave()`, which debounces `persistAll()` by **600 ms**
 
 `persistAll()` writes the entire `state.items` array to the backend via `saveAll`. This diff-based bulk save avoids full overwrites of unchanged items.
+
+Three rules keep that debounce from eating data — all three were violated at some point and each cost a real edit:
+
+- **Never drop a save.** When `persistAll()` is called while `state.saveInFlight`, it sets `state.saveQueued` and re-runs once the current write finishes. Returning early instead means the user's last keystroke — or a deletion — never reaches the backend, and nothing schedules a retry.
+- **`cancelPendingSave()` must not touch `saveInFlight`.** That flag tracks a real write in progress; clearing it lets two `saveAll` calls interleave their read-modify-write of `index.json`, so the slower one resurrects prompts the faster one just deleted. `storage.js` also serializes `saveAll` through `_saveChain` as a second line of defence.
+- **Prefer `flushPendingSave()` over `cancelPendingSave()`.** `selectPrompt()` used to cancel, which discarded the pending edit of the prompt you were leaving. Cancelling is only correct where the caller immediately calls `persistAll()` itself (create, delete, import), since that writes all of `state.items` anyway.
+
+`bindEvents()` also flushes on `visibilitychange` (hidden) and `pagehide`: on mobile the tab can be frozen or killed without ever firing `beforeunload`.
+
+### `[hidden]` and CSS `display`
+
+`styles.css` starts with `[hidden] { display: none !important; }`. It has to: `[hidden]` only comes from the user-agent stylesheet, so any author rule that sets `display` (`.editor-form { display: flex }`, `.empty-editor { display: flex }`, `.app { display: grid }`) silently overrides it and the element keeps rendering with `hidden = true`. That is how the editor form and the "select a prompt" empty state ended up painted on top of each other.
+
+The flip side: with that rule in place, an element whose visibility CSS owns must not be left with a stale `hidden` attribute in `index.html`. `#new-fab` was — nothing ever cleared it, and the FAB only appeared because the `[hidden]` was being overridden. `bootstrap()` now clears it alongside `els.app.hidden = false`; the media queries still decide whether it actually shows.
 
 ### Mobile View Switching
 

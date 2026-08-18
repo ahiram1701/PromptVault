@@ -11,7 +11,7 @@ En producción: **https://witty-meerkat-9381.puter.site**
 - [Fuse.js](https://www.fusejs.io/) para búsqueda fuzzy (vendorizado)
 - [SheetJS](https://sheetjs.com/) para importar/exportar Excel (vendorizado)
 
-No hay tests, linters ni formateadores configurados.
+No hay linters ni formateadores. Los tests están en `tests.html`: abre `http://localhost:8080/tests.html` y pulsa **Ejecutar tests**.
 
 ## Funcionalidades
 
@@ -19,7 +19,7 @@ No hay tests, linters ni formateadores configurados.
 - Búsqueda fuzzy sobre título, cuerpo y tags
 - Filtro por tag y por favoritos
 - Tema oscuro/claro persistido
-- Importar y exportar en Excel
+- Importar y exportar en Excel; al importar, las filas con un ID ya conocido actualizan ese prompt en vez de duplicarlo
 - Respaldos automáticos al cargar, y manuales desde la UI
 - Conectar/desconectar de la cuenta de Puter desde la barra superior
 - UI móvil: vista única con swipe-to-go-back, swipe actions en la lista y bottom sheet

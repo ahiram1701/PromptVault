@@ -147,6 +147,57 @@
       pass++;
     } catch (e) { log('delete elimina del backend', false, e.message); fail++; }
 
+    // Test 8: dos saveAll solapados no se pisan el indice.
+    // Regresion: con un backend lento (puter.fs por red) el saveAll que iba
+    // por detras reescribia prompts que el otro acababa de borrar, asi que un
+    // prompt eliminado reaparecia al recargar.
+    try {
+      var local = storage.backends.local;
+      var idKeep = storage.newId();
+      var idDrop = storage.newId();
+      var mk = function (id, title) {
+        return { id: id, title: title, body: '', tags: [], favorite: false,
+                 createdAt: '2024-01-01T00:00:00Z', updatedAt: '2024-01-01T00:00:00Z' };
+      };
+      await storage.saveAll([mk(idKeep, 'Keep'), mk(idDrop, 'Drop')], 'local');
+
+      var realPut = local.put.bind(local);
+      local.put = function (p) {
+        return new Promise(function (r) { setTimeout(r, 60); }).then(function () { return realPut(p); });
+      };
+      try {
+        // A ve los dos prompts; B ya no ve idDrop y por tanto lo borra.
+        var a = storage.saveAll([mk(idKeep, 'Keep v2'), mk(idDrop, 'Drop v2')], 'local');
+        var b = storage.saveAll([mk(idKeep, 'Keep v3')], 'local');
+        await Promise.all([a, b]);
+      } finally {
+        local.put = realPut;
+        local._invalidateCache();
+      }
+
+      var after = (await storage.loadAll('local')).items.map(function (it) { return it.id; });
+      assert(after.indexOf(idKeep) !== -1, 'se perdio el prompt que debia quedarse');
+      assert(after.indexOf(idDrop) === -1, 'el prompt borrado reaparecio en el indice');
+      log('saveAll se serializa: un borrado no revive por un guardado solapado', true);
+      pass++;
+    } catch (e) { log('saveAll se serializa: un borrado no revive por un guardado solapado', false, e.message); fail++; }
+
+    // Test 9: put respeta el updatedAt del llamador.
+    // Regresion: put lo pisaba con la hora actual, asi que memoria y disco
+    // tenian marcas distintas y la lista (ordenada por updatedAt) bailaba.
+    try {
+      var idU = storage.newId();
+      var marca = '2024-06-15T10:30:00.000Z';
+      await storage.saveAll([{ id: idU, title: 'Marca', body: 'x', tags: [], favorite: false,
+                               createdAt: '2024-01-01T00:00:00Z', updatedAt: marca }], 'local');
+      storage.backends.local._invalidateCache();
+      var got = await storage.backends.local.get(idU);
+      assert(got, 'no se guardo');
+      assert(got.updatedAt === marca, 'updatedAt pisado: ' + got.updatedAt);
+      log('put conserva el updatedAt que envia el llamador', true);
+      pass++;
+    } catch (e) { log('put conserva el updatedAt que envia el llamador', false, e.message); fail++; }
+
     // Resumen
     var summary = document.createElement('div');
     summary.className = 'summary';

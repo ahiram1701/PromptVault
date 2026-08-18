@@ -48,7 +48,11 @@
     filter: { q: '', tag: '', onlyFav: false },
     saveTimer: null,
     initialized: false,
-    saveInFlight: false
+    saveInFlight: false,
+    // Un guardado solicitado mientras otro está en vuelo no se descarta: se
+    // encola y se ejecuta al terminar (antes se perdía silenciosamente).
+    saveQueued: false,
+    saveQueuedSilent: true
   };
 
   // ---------- helpers ----------
@@ -135,7 +139,8 @@
       setStatus('Este SDK de Puter no permite iniciar sesión');
       return;
     }
-    // El debounce de 600 ms no debe escribir en localStorage a mitad del cambio.
+    // El debounce de 600 ms no debe escribir a mitad del cambio de backend.
+    // (No se puede await-ear aquí: signIn() debe ser el primer await.)
     cancelPendingSave();
 
     // signIn() abre un popup: debe ser el primer await del handler para no
@@ -154,6 +159,9 @@
       return;
     }
 
+    // Con la sesión ya abierta sí podemos volcar lo pendiente a local antes
+    // de cambiar de backend, para no perder la última edición.
+    await persistAll(true);
     var localItems = state.items.slice();
     setStatus('conectando a Puter…');
     try {
@@ -205,6 +213,7 @@
     if (state.host !== 'puter') return;
     if (!window.confirm('¿Cerrar sesión de Puter? Volverás al modo local.')) return;
     cancelPendingSave();
+    await persistAll(true); // último volcado a la nube antes de soltar la sesión
     var auth = puterAuthApi();
     if (auth && typeof auth.signOut === 'function') {
       try { auth.signOut(); }
@@ -249,11 +258,21 @@
     return wrapped;
   }
 
+  // Descarta el temporizador del debounce. NO toca saveInFlight: ese flag
+  // describe una escritura real en curso y ponerlo a false aquí permitía que
+  // dos saveAll se solapasen y se pisaran el índice.
   function cancelPendingSave() {
     if (scheduleSave && typeof scheduleSave.cancel === 'function') {
       scheduleSave.cancel();
     }
-    state.saveInFlight = false;
+  }
+
+  // Escribe ya lo que el debounce tenía pendiente en vez de tirarlo.
+  function flushPendingSave() {
+    if (!scheduleSave || typeof scheduleSave.isPending !== 'function') return Promise.resolve();
+    if (!scheduleSave.isPending()) return Promise.resolve();
+    scheduleSave.cancel();
+    return persistAll(true);
   }
 
   function normalize(text) {
@@ -490,7 +509,9 @@
 
   // ---------- render: editor ----------
   function selectPrompt(id) {
-    cancelPendingSave();
+    // Volcar (no descartar) lo que el debounce tuviera pendiente del prompt
+    // anterior: descartarlo perdía la última edición para siempre.
+    flushPendingSave();
     state.selectedId = id;
     var item = state.items.find(function (it) { return it.id === id; });
     if (!item) return clearEditor();
@@ -531,7 +552,13 @@
 
   // ---------- persistencia ----------
   async function persistAll(silent) {
-    if (state.saveInFlight) return;
+    if (state.saveInFlight) {
+      // Encolar en lugar de descartar: si no, el último cambio del usuario
+      // (o un borrado) nunca llegaba al backend.
+      state.saveQueued = true;
+      if (!silent) state.saveQueuedSilent = false;
+      return;
+    }
     try {
       state.saveInFlight = true;
       // Asegura createdAt solo si falta; no toca updatedAt de items no editados.
@@ -539,7 +566,7 @@
         if (!it.createdAt) it.createdAt = nowIso();
       });
       await window.PromptVaultStorage.saveAll(state.items, state.host);
-      if (!silent) { flashHint('Guardado'); haptic([20]); }
+      if (!silent) { flashHint('Guardado', false, true); haptic([20]); }
     } catch (err) {
       console.error('persistAll error', err);
       var msg = (err && err.message) || String(err);
@@ -552,6 +579,13 @@
       }
     } finally {
       state.saveInFlight = false;
+    }
+    // Drenar el guardado encolado durante la escritura anterior.
+    if (state.saveQueued) {
+      var queuedSilent = state.saveQueuedSilent;
+      state.saveQueued = false;
+      state.saveQueuedSilent = true;
+      await persistAll(queuedSilent);
     }
   }
 
@@ -572,8 +606,46 @@
   let _hintTimer = null;
   let _moreMenuDocClick = null;
   let _moreMenuKeyDown = null;
-  function flashHint(text, isError) {
-    if (!els.saveHint) return;
+  let _toastTimer = null;
+
+  // Aviso flotante sobre la app. #save-hint vive dentro del editor, que está
+  // oculto en la vista lista de móvil y cuando no hay prompt seleccionado, así
+  // que allí no sirve para nada: Exportar/Importar Excel y los errores de
+  // guardado se anunciaban a un elemento invisible.
+  function toast(text, isError) {
+    var el = document.getElementById('toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toast';
+      el.className = 'toast';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      document.body.appendChild(el);
+    }
+    el.textContent = (isError ? '✗ ' : '✓ ') + text;
+    el.classList.toggle('is-error', !!isError);
+    // reiniciar la animación de entrada aunque ya estuviera visible
+    el.classList.remove('is-open');
+    void el.offsetWidth;
+    el.classList.add('is-open');
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function () {
+      el.classList.remove('is-open');
+      _toastTimer = null;
+    }, isError ? 4500 : 2400);
+  }
+
+  function hintIsVisible() {
+    return !!(els.saveHint && els.saveHint.offsetParent !== null);
+  }
+
+  // inlineOnly marca los avisos de rutina (autoguardado): si el editor no está
+  // a la vista simplemente no se anuncian, en vez de llenar la pantalla de
+  // toasts. Los errores siempre salen como toast.
+  function flashHint(text, isError, inlineOnly) {
+    var inline = hintIsVisible();
+    if (isError || (!inline && !inlineOnly)) toast(text, isError);
+    if (!els.saveHint || !inline) return;
     if (_hintTimer) { clearTimeout(_hintTimer); _hintTimer = null; }
     var prefix = isError ? '✗ ' : '✓ ';
     els.saveHint.textContent = prefix + text;
@@ -653,10 +725,14 @@
         };
       });
       var ws = window.XLSX.utils.json_to_sheet(data);
+      // Anchos de columna: si no, Cuerpo sale como una tira ilegible.
+      ws['!cols'] = [{ wch: 38 }, { wch: 30 }, { wch: 70 }, { wch: 24 }, { wch: 9 }, { wch: 22 }, { wch: 22 }];
       var wb = window.XLSX.utils.book_new();
       window.XLSX.utils.book_append_sheet(wb, ws, 'Prompts');
-      window.XLSX.writeFile(wb, 'promptvault-export-' + Date.now() + '.xlsx');
-      flashHint('Exportación Excel descargada');
+      // Marca de tiempo legible en vez de epoch en milisegundos.
+      var stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
+      window.XLSX.writeFile(wb, 'promptvault-' + stamp + '.xlsx');
+      flashHint('Excel exportado: ' + data.length + ' prompt' + (data.length === 1 ? '' : 's'));
     } catch (err) {
       console.error('exportExcel error', err);
       flashHint('Error al exportar Excel', true);
@@ -697,13 +773,18 @@
           var firstSheetName = workbook.SheetNames[0];
           if (!firstSheetName) throw new Error('El archivo Excel no contiene hojas');
           var worksheet = workbook.Sheets[firstSheetName];
-          var rows = window.XLSX.utils.sheet_to_json(worksheet);
+          // defval rellena las celdas vacías: sin él, sheet_to_json omite las
+          // claves sin valor y una fila con Tags/Favorito en blanco hacía que
+          // esas columnas no se detectaran para NINGUNA fila del archivo.
+          var rows = window.XLSX.utils.sheet_to_json(worksheet, { defval: '' });
           if (!Array.isArray(rows) || rows.length === 0) throw new Error('La hoja está vacía o no tiene datos');
 
-          var firstRow = rows[0];
+          // Las cabeceras se leen de la fila de cabecera real de la hoja.
+          var headerRow = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false })[0] || [];
           var headerMap = {};
-          Object.keys(firstRow).forEach(function (k) {
-            headerMap[normalizeExcelHeader(k)] = k;
+          headerRow.concat(Object.keys(rows[0])).forEach(function (k) {
+            var norm = normalizeExcelHeader(k);
+            if (norm && headerMap[norm] === undefined) headerMap[norm] = k;
           });
 
           var colId       = resolveExcelColumn(headerMap, ['id']);
@@ -714,19 +795,28 @@
           var colCreated  = resolveExcelColumn(headerMap, ['creado', 'creadoel', 'createdat', 'created', 'fechacreacion', 'fechadecreacion']);
           var colUpdated  = resolveExcelColumn(headerMap, ['actualizado', 'actualizadoel', 'updatedat', 'updated', 'fechaactualizacion', 'fechadeactualizacion']);
 
-          if (!colTitle && !colBody) throw new Error('No se encontraron columnas de título o cuerpo');
+          if (colTitle === undefined && colBody === undefined) {
+            throw new Error('No se encontraron columnas de título o cuerpo');
+          }
 
-          var seenIds = new Set(state.items.map(function (it) { return it.id; }));
-          var added = 0, skipped = 0;
+          // Un ID que ya existe se ACTUALIZA en vez de clonarse: la columna ID
+          // se exporta justamente para poder reimportar el mismo archivo sin
+          // acabar con la biblioteca duplicada.
+          var byId = new Map();
+          state.items.forEach(function (it) { byId.set(it.id, it); });
+          var seenInFile = new Set();
+          var added = 0, updated = 0, skipped = 0;
           rows.forEach(function (row) {
             if (!row || typeof row !== 'object') { skipped++; return; }
             var rawTitle = colTitle !== undefined ? row[colTitle] : '';
             var rawBody  = colBody  !== undefined ? row[colBody]  : '';
             if (!String(rawTitle || '').trim() && !String(rawBody || '').trim()) { skipped++; return; }
 
-            var id = colId !== undefined && row[colId] ? String(row[colId]) : null;
-            if (!id || seenIds.has(id)) id = window.PromptVaultStorage.newId();
-            seenIds.add(id);
+            var id = colId !== undefined && row[colId] ? String(row[colId]).trim() : '';
+            // Sin ID, o con un ID repetido dentro del propio archivo, se crea uno nuevo.
+            if (!id || seenInFile.has(id)) id = window.PromptVaultStorage.newId();
+            seenInFile.add(id);
+            var target = byId.get(id) || null;
 
             var rawTags = colTags !== undefined ? row[colTags] : '';
             var tags = [];
@@ -743,7 +833,7 @@
               }
             }
 
-            state.items.push({
+            var next = {
               id: id,
               title: String(rawTitle || '').trim().slice(0, 500),
               body: String(rawBody || '').slice(0, 100000),
@@ -751,8 +841,16 @@
               favorite: colFav !== undefined ? parseExcelBoolean(row[colFav]) : false,
               createdAt: colCreated !== undefined && row[colCreated] ? String(row[colCreated]) : nowIso(),
               updatedAt: colUpdated !== undefined && row[colUpdated] ? String(row[colUpdated]) : nowIso()
-            });
-            added++;
+            };
+            if (target) {
+              next.createdAt = target.createdAt || next.createdAt;
+              Object.assign(target, next);
+              updated++;
+            } else {
+              state.items.push(next);
+              byId.set(id, next);
+              added++;
+            }
           });
 
           state.fuse = buildFuse();
@@ -760,7 +858,10 @@
           renderList();
           cancelPendingSave();
           return persistAll(false).then(function () {
-            flashHint('Importados desde Excel: ' + added + ', omitidos: ' + skipped);
+            var partes = ['nuevos: ' + added];
+            if (updated) partes.push('actualizados: ' + updated);
+            if (skipped) partes.push('omitidos: ' + skipped);
+            flashHint('Excel importado — ' + partes.join(', '));
           });
         })
         .catch(function (err) {
@@ -1120,11 +1221,18 @@
 
     // Advertir si hay cambios sin guardar al cerrar la pestaña.
     window.addEventListener('beforeunload', function (ev) {
-      if (state.saveInFlight || (scheduleSave && scheduleSave.isPending())) {
+      if (state.saveInFlight || state.saveQueued || (scheduleSave && scheduleSave.isPending())) {
         ev.preventDefault();
         ev.returnValue = '';
       }
     });
+
+    // En móvil el sistema puede congelar o matar la pestaña sin disparar
+    // beforeunload, así que volcamos lo pendiente en cuanto deja de verse.
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') flushPendingSave();
+    });
+    window.addEventListener('pagehide', function () { flushPendingSave(); });
 
     if (els.title) els.title.addEventListener('input', onFormChange);
     if (els.body)  els.body.addEventListener('input', onBodyInput);
@@ -1443,6 +1551,10 @@
       els.app.hidden = false;
       setView('list'); // explícito: al arrancar siempre lista
     }
+    // El FAB comparte con #app la puerta de "app lista": nadie le quitaba el
+    // atributo hidden y sólo se veía porque el CSS anulaba el [hidden].
+    // Su visibilidad real la decide el CSS (móvil + vista lista).
+    if (els.newFab) els.newFab.hidden = false;
     updateConnectionUI();
     state.initialized = true;
     // respaldo automático silencioso al cargar (sólo si el backend elegido funciona)

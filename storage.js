@@ -148,7 +148,10 @@
       await puterEnsureDirs();
       var now = nowIso();
       next.createdAt = next.createdAt || now;
-      next.updatedAt = now;
+      // El llamador es el dueño de updatedAt (app.js lo fija al editar).
+      // Pisarlo dejaba memoria y disco con marcas distintas, y la lista se
+      // ordena justamente por updatedAt.
+      if (!next.updatedAt) next.updatedAt = now;
       var path = PUTER_PROMPTS_DIR + '/' + next.id + '.json';
       await puterWriteAtomic(path, JSON.stringify(next, null, 2));
       var idx = await puterListFromIndex();
@@ -245,7 +248,7 @@
       if (!next) throw new Error('Prompt inválido: falta id');
       var now = nowIso();
       next.createdAt = next.createdAt || now;
-      next.updatedAt = now;
+      if (!next.updatedAt) next.updatedAt = now; // ver nota en PuterBackend.put
       localStorageSafeSet(LOCAL_PROMPT_KEY(next.id), JSON.stringify(next));
       var idx = this._readIndex();
       if (idx.ids.indexOf(next.id) === -1) idx.ids.push(next.id);
@@ -346,7 +349,18 @@
     return true;
   }
 
-  async function saveAll(items, host) {
+  // Dos saveAll solapados hacen read-modify-write sobre el mismo index.json y
+  // se pisan: el que va por detrás reescribe prompts que el otro acaba de
+  // borrar (borrabas un prompt y reaparecía al recargar). Se serializan.
+  var _saveChain = Promise.resolve();
+  function saveAll(items, host) {
+    var run = _saveChain.then(function () { return saveAllSerial(items, host); },
+                              function () { return saveAllSerial(items, host); });
+    _saveChain = run.catch(function () { /* un fallo no debe romper la cadena */ });
+    return run;
+  }
+
+  async function saveAllSerial(items, host) {
     var backend = host === 'puter' ? PuterBackend : LocalBackend;
     var incoming = Array.isArray(items) ? items : [];
 
