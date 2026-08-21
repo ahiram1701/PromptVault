@@ -43,6 +43,9 @@ $files = @(
   'app.js',
   'storage.js',
   'styles.css',
+  'favicon.svg',
+  'favicon.ico',
+  'apple-touch-icon.png',
   'debug.html',
   'tests.html'
 )
