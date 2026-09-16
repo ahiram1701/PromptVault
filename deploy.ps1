@@ -122,10 +122,20 @@ if ($SkipVerify) {
 }
 
 Write-Host "Verificando..." -ForegroundColor Cyan
-$bust = [guid]::NewGuid().ToString('N')
 $ok = $true
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $wc = New-Object System.Net.WebClient
+
+# El despliegue es versionado: el CLI sube a una carpeta nueva y DESPUES
+# reapunta el subdominio. En ese hueco la URL sigue sirviendo la version
+# anterior, y encima de forma desigual — en un despliegue real debug.html ya
+# era el nuevo mientras app.js, storage.js y styles.css seguian siendo los
+# viejos, con sus tamanos exactos de antes. Verificar a la primera daba un DIFF
+# que no existia y parecia un despliegue roto. Por eso cada archivo se reintenta
+# antes de darlo por malo; un despliegue de verdad roto sigue fallando, solo que
+# un par de minutos mas tarde. Cuando todo va bien no cuesta ni un segundo.
+$maxIntentos = 4
+$esperaSeg = 4
 
 # Se verifica TODO lo que hay en dist/, subcarpetas incluidas, y en la misma
 # ruta relativa con la que index.html lo pide. Verificar solo los archivos
@@ -136,20 +146,32 @@ $distFiles = Get-ChildItem $dist -Recurse -File
 foreach ($item in $distFiles) {
   # .Replace() es el metodo de String (literal), no el operador -replace (regex).
   $rel = $item.FullName.Substring($dist.Length + 1).Replace('\', '/')
-  $url = "https://$Subdomain.puter.site/$rel`?cb=$bust"
-  try {
-    $localBytes  = [System.IO.File]::ReadAllBytes($item.FullName)
-    $remoteBytes = $wc.DownloadData($url)
-    $lh = [BitConverter]::ToString($sha.ComputeHash($localBytes))
-    $rh = [BitConverter]::ToString($sha.ComputeHash($remoteBytes))
-    if ($lh -eq $rh) {
-      Write-Host ("  OK   {0,-26} {1} bytes" -f $rel, $localBytes.Length) -ForegroundColor Green
-    } else {
-      Write-Host ("  DIFF {0,-26} local {1} vs remoto {2} bytes" -f $rel, $localBytes.Length, $remoteBytes.Length) -ForegroundColor Red
-      $ok = $false
+  $localBytes = [System.IO.File]::ReadAllBytes($item.FullName)
+  $lh = [BitConverter]::ToString($sha.ComputeHash($localBytes))
+
+  $coincide = $false
+  $detalle = ''
+  for ($intento = 1; $intento -le $maxIntentos; $intento++) {
+    # Cache-buster nuevo en CADA intento: reusar el mismo permitiria que el
+    # borde nos devolviera su copia vieja de esa misma URL una y otra vez.
+    $bust = [guid]::NewGuid().ToString('N')
+    $url = "https://$Subdomain.puter.site/$rel`?cb=$bust"
+    try {
+      $remoteBytes = $wc.DownloadData($url)
+      $rh = [BitConverter]::ToString($sha.ComputeHash($remoteBytes))
+      if ($lh -eq $rh) { $coincide = $true; break }
+      $detalle = "local {0} vs remoto {1} bytes" -f $localBytes.Length, $remoteBytes.Length
+    } catch {
+      $detalle = $_.Exception.Message
     }
-  } catch {
-    Write-Host "  FAIL $rel -> $($_.Exception.Message)" -ForegroundColor Red
+    if ($intento -lt $maxIntentos) { Start-Sleep -Seconds $esperaSeg }
+  }
+
+  if ($coincide) {
+    $sufijo = if ($intento -gt 1) { " (tras $intento intentos)" } else { '' }
+    Write-Host ("  OK   {0,-26} {1} bytes{2}" -f $rel, $localBytes.Length, $sufijo) -ForegroundColor Green
+  } else {
+    Write-Host ("  DIFF {0,-26} {1}" -f $rel, $detalle) -ForegroundColor Red
     $ok = $false
   }
 }
