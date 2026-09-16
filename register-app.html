@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PromptVault · Registrar app en Puter</title>
+<style>
+  :root { --bg: #0f1115; --bg-elev: #161a22; --border: #2a2f3a; --text: #e6e8ee; --text-dim: #9aa3b2; --accent: #7c9cff; --danger: #ff6b6b; --ok: #5dd39e; --warn: #f5a524; }
+  body { margin: 0; padding: 20px; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; line-height: 1.5; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { color: var(--text-dim); font-size: 14px; margin: 0 0 18px; }
+  .card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; text-align: right; word-break: break-all; }
+  .btn { background: var(--border); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 9px 14px; cursor: pointer; font-size: 14px; margin: 4px 8px 0 0; }
+  .btn-primary { background: var(--accent); color: #0c1020; border-color: var(--accent); font-weight: 600; }
+  .btn-danger { background: rgba(255,107,107,0.12); color: var(--danger); border-color: var(--danger); }
+  .btn[disabled] { opacity: 0.5; cursor: default; }
+  pre#log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; margin: 12px 0 0; color: var(--text-dim); }
+  pre#log.ok { color: var(--ok); }
+  pre#log.warn { color: var(--warn); }
+  pre#log.err { color: var(--danger); }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .err { color: var(--danger); }
+  .note { font-size: 13px; color: var(--text-dim); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Registrar PromptVault como app de Puter</h1>
+  <p class="sub">
+    Crea o actualiza la entrada de la app en tu cuenta de Puter a partir de <code>app-manifest.js</code>.
+    Es idempotente: se puede volver a ejecutar tras cada cambio de metadatos.
+  </p>
+
+  <div class="card">
+    <h2>Estado</h2>
+    <div class="row"><span>puter.env</span><span class="value" id="env">—</span></div>
+    <div class="row"><span>Sesión</span><span class="value" id="session">—</span></div>
+    <div class="row"><span>App <code>promptvault</code></span><span class="value" id="app-state">—</span></div>
+    <div class="row"><span>indexURL registrada</span><span class="value" id="app-url">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Acciones</h2>
+    <button class="btn btn-primary" id="register" type="button">Registrar / actualizar app</button>
+    <button class="btn" id="refresh" type="button">Refrescar estado</button>
+
+    <p class="note" style="margin: 14px 0 4px;">
+      Sonda: registra una app desechable que abre <code>debug.html</code> dentro de Puter, para ver a
+      qué ruta absoluta resuelven los paths relativos desde una app registrada. Bórrala al terminar.
+    </p>
+    <button class="btn" id="register-probe" type="button">Registrar app de sonda</button>
+    <button class="btn btn-danger" id="delete-probe" type="button">Borrar app de sonda</button>
+
+    <pre id="log">Listo.</pre>
+  </div>
+</div>
+
+<script src="https://js.puter.com/v2/"></script>
+<script src="./app-manifest.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  function $(id) { return document.getElementById(id); }
+
+  var lines = [];
+  function log(msg, cls) {
+    lines.push(msg);
+    var el = $('log');
+    el.textContent = lines.join('\n');
+    el.className = cls || '';
+    el.scrollTop = el.scrollHeight;
+  }
+  function errText(err) { return String((err && (err.message || err.error)) || err); }
+
+  function setText(id, text, cls) {
+    var el = $(id);
+    el.textContent = text;
+    el.className = 'value' + (cls ? ' ' + cls : '');
+  }
+
+  function signedIn() {
+    try {
+      return !!(window.puter && window.puter.auth &&
+                typeof window.puter.auth.isSignedIn === 'function' &&
+                window.puter.auth.isSignedIn());
+    } catch (_) { return false; }
+  }
+
+  // Puter quiere el icono como data URI. Se genera desde el PNG del repo para
+  // no comitear el base64; por eso esta pagina necesita servirse por http
+  // (con file:// el fetch falla).
+  async function iconDataUri() {
+    var res = await fetch('./apple-touch-icon.png');
+    if (!res.ok) throw new Error('no se pudo leer apple-touch-icon.png (HTTP ' + res.status + ')');
+    var blob = await res.blob();
+    return await new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(fr.result); };
+      fr.onerror = function () { reject(fr.error); };
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function getApp(name) {
+    try { return await window.puter.apps.get(name); }
+    catch (_) { return null; } // todavía no existe
+  }
+
+  async function refresh() {
+    setText('env', (window.puter && window.puter.env) || '—');
+    var session = signedIn();
+    setText('session', session ? 'iniciada' : 'sin iniciar', session ? 'ok' : 'warn');
+    if (!session) {
+      setText('app-state', '—');
+      setText('app-url', '—');
+      return;
+    }
+    var app = await getApp(window.PromptVaultAppManifest.name);
+    setText('app-state', app ? 'registrada' : 'no registrada', app ? 'ok' : 'warn');
+    setText('app-url', (app && (app.index_url || app.indexURL)) || '—');
+  }
+
+  // signIn() abre un popup: tiene que ser el PRIMER await del handler o el
+  // navegador pierde el gesto de usuario y lo bloquea. Misma regla que
+  // connectPuter() en app.js.
+  async function ensureSession() {
+    if (signedIn()) return true;
+    try {
+      await window.puter.auth.signIn();
+      return true;
+    } catch (err) {
+      var code = (err && (err.error || err.code)) || '';
+      if (code === 'auth_window_closed') { log('Inicio de sesión cancelado.', 'warn'); return false; }
+      if (code === 'popup_blocked') { log('Permite las ventanas emergentes para iniciar sesión.', 'warn'); return false; }
+      log('No se pudo iniciar sesión: ' + errText(err), 'err');
+      return false;
+    }
+  }
+
+  async function withButtons(fn) {
+    var btns = document.querySelectorAll('.btn');
+    var i;
+    for (i = 0; i < btns.length; i++) btns[i].disabled = true;
+    try { await fn(); }
+    finally { for (i = 0; i < btns.length; i++) btns[i].disabled = false; }
+  }
+
+  async function upsert(manifest, withIcon) {
+    var existing = await getApp(manifest.name);
+    var payload = {};
+    Object.keys(manifest).forEach(function (k) { payload[k] = manifest[k]; });
+
+    if (withIcon) {
+      try {
+        payload.icon = await iconDataUri();
+        log('Icono resuelto (' + payload.icon.length + ' caracteres).');
+      } catch (err) {
+        log('Aviso: se registra sin icono — ' + errText(err), 'warn');
+      }
+    }
+
+    if (existing) {
+      // update() acepta 'name' como renombrado; mandar el mismo nombre no aporta
+      // nada y puede chocar con la validación de unicidad, así que fuera.
+      delete payload.name;
+      log('Ya existía; actualizando "' + manifest.name + '"…');
+      return await window.puter.apps.update(manifest.name, payload);
+    }
+    log('Creando "' + manifest.name + '"…');
+    return await window.puter.apps.create(payload);
+  }
+
+  async function register() {
+    lines = [];
+    if (!(await ensureSession())) return;
+
+    // Gestionar apps desde un sitio web es un permiso aparte del de ficheros.
+    if (window.puter.perms && typeof window.puter.perms.request === 'function') {
+      try {
+        var granted = await window.puter.perms.request('apps');
+        log('Permiso "apps": ' + (granted ? 'concedido' : 'denegado'), granted ? 'ok' : 'warn');
+      } catch (err) {
+        log('Aviso: no se pudo pedir el permiso "apps" — ' + errText(err), 'warn');
+      }
+    }
+
+    try {
+      var app = await upsert(window.PromptVaultAppManifest, true);
+      log('Hecho. Abre la app en https://puter.com/app/' + window.PromptVaultAppManifest.name, 'ok');
+      log(JSON.stringify(app, null, 2));
+    } catch (err) {
+      log('ERROR: ' + errText(err), 'err');
+    }
+    await refresh();
+  }
+
+  async function registerProbe() {
+    lines = [];
+    if (!(await ensureSession())) return;
+    try {
+      var app = await upsert(window.PromptVaultProbeManifest, false);
+      log('Sonda en https://puter.com/app/' + window.PromptVaultProbeManifest.name +
+          ' — ábrela, pulsa «Sondear FS de Puter» y compara la ruta con la del sitio puter.site.', 'ok');
+      log(JSON.stringify(app, null, 2));
+    } catch (err) {
+      log('ERROR: ' + errText(err), 'err');
+    }
+  }
+
+  async function deleteProbe() {
+    lines = [];
+    if (!(await ensureSession())) return;
+    try {
+      await window.puter.apps.delete(window.PromptVaultProbeManifest.name);
+      log('App de sonda borrada.', 'ok');
+    } catch (err) {
+      log('ERROR: ' + errText(err), 'err');
+    }
+  }
+
+  $('register').addEventListener('click', function () { withButtons(register); });
+  $('register-probe').addEventListener('click', function () { withButtons(registerProbe); });
+  $('delete-probe').addEventListener('click', function () { withButtons(deleteProbe); });
+  $('refresh').addEventListener('click', function () { withButtons(refresh); });
+
+  refresh();
+})();
+</script>
+</body>
+</html>

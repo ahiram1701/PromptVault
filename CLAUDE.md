@@ -20,6 +20,10 @@ python -m http.server 8080
 
 Then open `http://localhost:8080`. The app detects it is not running inside Puter and enters demo mode using `localStorage`.
 
+`.claude/launch.json` also carries a `promptvault-node` configuration (`npx http-server` on 8081) for machines without Python.
+
+`debug.html` is the diagnostic page. It loads Puter.js (it used to not, which is why its "Puter.js" card always reported *No*) and its **Ubicación real en Puter** card prints `puter.env`, the user, and the absolute path `stat('PromptVault')` resolves to. Open it from the `puter.site` site and from inside Puter — `register-app.html` can register a throwaway `promptvault-debug` app pointing at it — to compare the two.
+
 There are no linters or formatters configured. Tests live in `tests.html` — a self-contained browser suite over `storage.js` in localStorage mode. Open `http://localhost:8080/tests.html` and press **Ejecutar tests**; every case must pass before deploying. Note the dev server sends no cache headers, so bump the port (or hard-reload) after editing a `.js`/`.css` file or the browser will happily re-run the old one.
 
 ## Deployment
@@ -60,9 +64,31 @@ Each visitor authenticates with their own Puter account and sees only their data
 `storage.js` exposes `window.PromptVaultStorage` with two backends:
 
 - **`PuterBackend`** — Uses `global.puter.fs` (mkdir, read, write, delete, rename). Stores data under `~/PromptVault/prompts/`.
+
+  **The root is resolved, not assumed.** Puter's docs say non-absolute paths resolve against "the app's root directory", and that a registered app is sandboxed to `~/AppData/<app-id>/` — which would make `'PromptVault/prompts'` mean different folders in the website and in the app. **Measured, that is not what happens here:** opening the registered app on this account (still serving the old relative-path code) listed the real prompts, so both contexts resolve to the same place. `resolvePuterRoot()` is therefore a guard, not a migration — it pins the root once: the absolute `.path` from `stat('PromptVault')` when the folder already exists, which is the branch that actually fires and keeps today's behaviour byte-for-byte; otherwise, in app mode, `puter.perms.request('folder', …)` for the home-dir folder; and only then the bare relative name. It exists so that a future change in how Puter assigns app roots can't silently split the two. Every path comes from `await puterPaths()`; the old `PUTER_PROMPTS_DIR` / `PUTER_INDEX_PATH` / `PUTER_BACKUPS_DIR` constants are gone because they would hardcode an assumption. `_invalidateRoot()` is separate from `_invalidateCache()` on purpose: the root only goes stale on a session change, and resetting it per write would cost a `stat` on every save.
 - **`LocalBackend`** — Uses `localStorage`. Keys are prefixed with `promptvault:`.
 
 At runtime the host is auto-detected in `app.js` bootstrap via `puterAvailable()` (is `puter.fs` usable?) and `puterSignedIn()` (`puter.auth.isSignedIn()`, when the SDK exposes it). If the SDK has no `auth.isSignedIn`, bootstrap stays optimistic and lets `loadAll` probe for real, falling back to `'local'` on a `PUTER_AUTH:` error.
+
+### Two Hosts: Website vs Registered Puter App
+
+PromptVault runs in two shapes and `app.js` branches on `puter.env`:
+
+- **`'web'`** — served from `*.puter.site` or localhost. The user signs in through the topbar cloud button; `connectPuter()` / `disconnectPuter()` are the whole story.
+- **`'app'` / `'gui'`** — running inside the Puter desktop as the registered app `promptvault` (`https://puter.com/app/promptvault`). `isPuterApp()` is the single predicate for this; everything else derives from it.
+
+In app mode: the session is already resolved by the handshake with the parent window, so `bootstrap()` sets `state.host = 'puter'` **without** consulting `auth.isSignedIn()`; `updateConnectionUI()` hides `#puter-connect` and says "app de Puter"; and `openMoreMenu()` must not offer "Cerrar sesión de Puter" — that session belongs to the parent window and signing out would just break the app. `bootstrap()` also sets `data-puter-app` on `<html>`, which `styles.css` uses to hide `h1.topbar-title` (the Puter window already has a title bar).
+
+The app entry itself is metadata only: `app-manifest.js` holds it and `register-app.html` pushes it with `puter.apps.create()` / `update()`. `indexURL` points at the same `puter.site` deployment, **so registering changes nothing about how you ship** — it is still `./deploy.ps1`. Both files are dev tools and are deliberately absent from `deploy.ps1`'s `$files`.
+
+Two consequences worth knowing before reaching for the CLI or deleting the site:
+
+- **The Puter CLI cannot register an app.** `puter app` is read-only (`list`, `get`) as of 0.3.0 — it deploys sites and workers, not apps. Registration only happens from a page with an authenticated `puter` object: `register-app.html`, the Dev Center at `puter.com/app/dev-center`, or `puter.apps.*` from any signed-in page.
+- **The site is not optional.** Puter loads `indexURL` in an iframe; it never keeps a copy of the code. `witty-meerkat-9381.puter.site` *is* the app. Delete the subdomain and the app window loads nothing.
+
+**Two browser APIs are avoided in app mode as a precaution** — neither has been observed failing against the live app, but both fail *silently* if the iframe sandbox does block them, which is why they were not left to chance. `window.confirm` can return `false` without asking, which would make deleting a prompt quietly do nothing; every confirmation goes through `confirmDialog()`, which uses `puter.ui.alert` in app mode and `window.confirm` outside. `XLSX.writeFile` downloads via an `<a download>` that a sandbox can block, so `exportExcel()` switches to `puter.ui.showSaveFilePicker`; `startImportExcel()` is the mirror image with `showOpenFilePicker`, and is also what `filetypeAssociations: ['.xlsx']` + `puter.ui.onLaunchedWithItems` feed. If you ever confirm the sandbox actually permits these, the native paths are still the better UX — don't revert them, just correct this note.
+
+`bindPuterAppEvents()` is one-shot like `bindEvents()` — never call it twice.
 
 ### Connecting / Disconnecting from Puter (`app.js`)
 
@@ -90,7 +116,7 @@ Each prompt is a JSON object:
 { id, title, body, tags: string[], favorite: boolean, createdAt, updatedAt }
 ```
 
-**Puter file layout:**
+**Puter file layout** (under the root that `resolvePuterRoot()` pins, normally `~/PromptVault/`):
 - `~/PromptVault/prompts/<id>.json` — one file per prompt
 - `~/PromptVault/prompts/index.json` — array of `ids` with `updatedAt`
 - `~/PromptVault/Backups/<iso-stamp>/manifest.json` + `items.json`
@@ -118,7 +144,7 @@ Three rules keep that debounce from eating data — all three were violated at s
 - **`cancelPendingSave()` must not touch `saveInFlight`.** That flag tracks a real write in progress; clearing it lets two `saveAll` calls interleave their read-modify-write of `index.json`, so the slower one resurrects prompts the faster one just deleted. `storage.js` also serializes `saveAll` through `_saveChain` as a second line of defence.
 - **Prefer `flushPendingSave()` over `cancelPendingSave()`.** `selectPrompt()` used to cancel, which discarded the pending edit of the prompt you were leaving. Cancelling is only correct where the caller immediately calls `persistAll()` itself (create, delete, import), since that writes all of `state.items` anyway.
 
-`bindEvents()` also flushes on `visibilitychange` (hidden) and `pagehide`: on mobile the tab can be frozen or killed without ever firing `beforeunload`.
+`bindEvents()` also flushes on `visibilitychange` (hidden) and `pagehide`: on mobile the tab can be frozen or killed without ever firing `beforeunload`. Neither of those fires when a **Puter window** is closed, so `bindPuterAppEvents()` adds a fourth net: `puter.ui.onWindowClose` awaits `flushPendingSave()` and only then calls `puter.ui.exit()`. Without it, closing the app right after typing dropped the last edit with the 600 ms timer.
 
 ### `[hidden]` and CSS `display`
 

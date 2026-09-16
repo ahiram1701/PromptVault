@@ -21,6 +21,7 @@
   .btn-danger { background: rgba(255,107,107,0.12); color: var(--danger); border-color: var(--danger); }
   .btn-primary { background: var(--accent); color: #0c1020; border-color: var(--accent); font-weight: 600; }
   .actions { margin-top: 16px; }
+  #p-dump { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; color: var(--text-dim); }
   #log { margin-top: 12px; font-size: 13px; font-family: monospace; white-space: pre-wrap; color: var(--text-dim); }
 </style>
 </head>
@@ -50,6 +51,15 @@
     <div class="row"><span>Resolución</span><span class="value" id="res">—</span></div>
   </div>
 
+  <div class="card">
+    <h2>Ubicación real en Puter</h2>
+    <div class="row"><span>puter.env</span><span class="value" id="p-env">—</span></div>
+    <div class="row"><span>Usuario</span><span class="value" id="p-user">—</span></div>
+    <div class="row"><span>Ruta absoluta de PromptVault</span><span class="value" id="p-root">—</span></div>
+    <pre id="p-dump">Pulsa «Sondear FS de Puter».</pre>
+    <button class="btn" id="probe" type="button">Sondear FS de Puter</button>
+  </div>
+
   <div class="actions">
     <button class="btn btn-primary" id="refresh" type="button">Refrescar datos</button>
     <button class="btn btn-danger" id="clear-cache" type="button">Borrar localStorage (promptvault:*)</button>
@@ -58,6 +68,8 @@
   <div id="log"></div>
 </div>
 
+<!-- Puter.js v2: sin esto la tarjeta "Puter.js" siempre reportaba No. -->
+<script src="https://js.puter.com/v2/"></script>
 <script src="./storage.js"></script>
 <script>
 (function () {
@@ -103,7 +115,10 @@
   function scanPuter() {
     var hasPuter = typeof window.puter !== 'undefined' && window.puter;
     var hasFs = hasPuter && typeof window.puter.fs !== 'undefined' && window.puter.fs && typeof window.puter.fs.write === 'function';
-    var isAuth = hasPuter && !!window.puter.auth && !!window.puter.auth.isAuthenticated && window.puter.auth.isAuthenticated();
+    // El SDK v2 expone isSignedIn(); isAuthenticated() no existe, asÃ­ que este
+    // check devolvÃ­a false siempre aunque hubiera sesiÃ³n.
+    var auth = hasPuter ? window.puter.auth : null;
+    var isAuth = !!(auth && typeof auth.isSignedIn === 'function' && auth.isSignedIn());
     setText('puter-defined', hasPuter ? 'Sí' : 'No', hasPuter ? 'status-ok' : 'status-danger');
     setText('puter-fs', hasFs ? 'Sí' : 'No', hasFs ? 'status-ok' : 'status-warn');
     setText('puter-auth', isAuth ? 'Sí' : 'No', isAuth ? 'status-ok' : 'status-warn');
@@ -114,6 +129,7 @@
     var t = document.documentElement.getAttribute('data-theme') || 'dark';
     setText('theme', t);
     setText('res', window.innerWidth + '×' + window.innerHeight);
+    setText('p-env', (window.puter && window.puter.env) || '—');
   }
 
   function refresh() {
@@ -135,8 +151,72 @@
     refresh();
   }
 
+  // ---------- sonda del FS de Puter ----------
+  // Responde lo que la documentación de Puter deja ambiguo: los paths relativos
+  // que usa storage.js ('PromptVault/prompts/...'), ¿resuelven al home del
+  // usuario o al sandbox ~/AppData/<app-id>/ de la app? Hay que comparar el
+  // path ABSOLUTO entre el sitio *.puter.site (env 'web') y la app registrada
+  // (env 'app'): si difieren, la app se abriría vacía.
+  async function probeFs() {
+    var out = [];
+    function line(label, val) {
+      out.push(label + ': ' + val);
+      $('p-dump').textContent = out.join('\n');
+    }
+    function errText(err) { return String((err && err.message) || err); }
+    async function names(path) {
+      var entries = await window.puter.fs.readdir(path);
+      return JSON.stringify((entries || []).map(function (e) { return e.name; }));
+    }
+
+    setText('p-env', (window.puter && window.puter.env) || '—');
+    if (!window.puter || !window.puter.fs) {
+      line('error', 'puter.fs no disponible');
+      return;
+    }
+    // Sin sesión, puter.fs no falla: se queda esperando al popup de login y la
+    // sonda parece colgada. Mejor cortar aquí con un aviso.
+    var authApi = window.puter.auth;
+    if (window.puter.env === 'web' && !(authApi && typeof authApi.isSignedIn === 'function' && authApi.isSignedIn())) {
+      line('aviso', 'sin sesión de Puter; inicia sesión desde la app y vuelve aquí');
+      return;
+    }
+
+    var username = null;
+    try {
+      var user = await window.puter.auth.getUser();
+      username = user && user.username;
+      setText('p-user', username || '—');
+      line('getUser', JSON.stringify(user));
+    } catch (err) {
+      setText('p-user', 'error', 'status-danger');
+      line('getUser ERROR', errText(err));
+    }
+
+    // El dato que decide todo: a qué path absoluto resuelve 'PromptVault'.
+    try {
+      var st = await window.puter.fs.stat('PromptVault');
+      setText('p-root', (st && st.path) || '(sin campo path)', 'status-ok');
+      line('stat("PromptVault")', JSON.stringify(st));
+    } catch (err) {
+      setText('p-root', 'no existe / error', 'status-warn');
+      line('stat("PromptVault") ERROR', errText(err));
+    }
+
+    try { line('readdir(".")', await names('.')); }
+    catch (err) { line('readdir(".") ERROR', errText(err)); }
+
+    if (username) {
+      try { line('readdir("/' + username + '")', await names('/' + username)); }
+      catch (err) { line('readdir home ERROR', errText(err)); }
+      try { line('readdir("/' + username + '/AppData")', await names('/' + username + '/AppData')); }
+      catch (err) { line('readdir AppData ERROR', errText(err)); }
+    }
+  }
+
   $('refresh').addEventListener('click', refresh);
   $('clear-cache').addEventListener('click', clearCache);
+  $('probe').addEventListener('click', probeFs);
 
   // Tema
   var saved = null;

@@ -88,10 +88,64 @@
     catch (_) { return false; }
   }
 
+  // 'web' = la app servida como sitio (puter.site o localhost); 'app'/'gui' =
+  // corriendo dentro del escritorio de Puter, en una ventana propia.
+  function puterEnv() {
+    return (typeof window.puter !== 'undefined' && window.puter && window.puter.env) || null;
+  }
+
+  // Dentro de Puter la sesión ya viene resuelta por el handshake con la ventana
+  // padre: no hay popup de login, no hay botón de conectar y no tiene sentido
+  // ofrecer "cerrar sesión". Además quedan disponibles las APIs puter.ui.*.
+  function isPuterApp() {
+    var env = puterEnv();
+    return env === 'app' || env === 'gui';
+  }
+
+  function puterUi() {
+    if (!isPuterApp()) return null;
+    return (window.puter && window.puter.ui) || null;
+  }
+
+  // window.confirm puede estar bloqueado dentro del iframe sandbox de Puter y
+  // devolver false en silencio: el borrado de un prompt simplemente no pasaría.
+  // En modo app se usa el diálogo nativo; fuera, el del navegador de siempre.
+  async function confirmDialog(message, danger) {
+    var ui = puterUi();
+    if (ui && typeof ui.alert === 'function') {
+      try {
+        var res = await ui.alert(message, [
+          { label: 'Cancelar', value: false },
+          { label: 'Aceptar', value: true, type: danger ? 'danger' : 'primary' }
+        ]);
+        return res === true;
+      } catch (err) {
+        console.warn('puter.ui.alert warning', err);
+      }
+    }
+    return window.confirm(message);
+  }
+
+  // La ventana de Puter tiene su propia barra de título: mantenerla sincronizada
+  // con el prompt abierto es lo que hace que parezca una app y no una web.
+  function syncWindowTitle() {
+    var ui = puterUi();
+    if (!ui || typeof ui.setWindowTitle !== 'function') return;
+    var item = state.selectedId
+      ? state.items.find(function (it) { return it.id === state.selectedId; })
+      : null;
+    var name = item && (item.title || '').trim();
+    try { ui.setWindowTitle(name ? 'PromptVault — ' + name : 'PromptVault'); }
+    catch (err) { console.warn('setWindowTitle warning', err); }
+  }
+
   // Única fuente de verdad del estado de conexión: texto de status + botón conectar.
   function updateConnectionUI() {
     var available = puterAvailable();
-    if (state.host === 'puter') {
+    var inApp = isPuterApp();
+    if (inApp) {
+      setStatus('app de Puter');
+    } else if (state.host === 'puter') {
       setStatus('conectado a Puter');
     } else if (available) {
       setStatus('modo local (Puter no autenticado)');
@@ -99,7 +153,8 @@
       setStatus('modo local (localStorage)');
     }
     if (els.puterConnect) {
-      els.puterConnect.hidden = (state.host === 'puter' || !available);
+      // Dentro de Puter no hay nada que conectar: la sesión ya está abierta.
+      els.puterConnect.hidden = (inApp || state.host === 'puter' || !available);
     }
   }
 
@@ -165,17 +220,21 @@
     var localItems = state.items.slice();
     setStatus('conectando a Puter…');
     try {
-      // La caché de 30 s puede retener el resultado vacío del intento pre-login.
+      // La caché de 30 s puede retener el resultado vacío del intento pre-login,
+      // y la raíz resuelta puede ser la del intento sin sesión.
       var puterBackend = window.PromptVaultStorage.backends && window.PromptVaultStorage.backends.puter;
       if (puterBackend && typeof puterBackend._invalidateCache === 'function') {
         puterBackend._invalidateCache();
+      }
+      if (puterBackend && typeof puterBackend._invalidateRoot === 'function') {
+        puterBackend._invalidateRoot();
       }
       var data = await window.PromptVaultStorage.loadAll('puter');
       var cloudItems = (data && Array.isArray(data.items)) ? data.items : [];
 
       var merge = false;
       if (localItems.length > 0) {
-        merge = window.confirm(
+        merge = await confirmDialog(
           'Tienes ' + localItems.length + ' prompt' + (localItems.length === 1 ? '' : 's') +
           ' en modo local. ¿Subirlos a tu cuenta de Puter?'
         );
@@ -211,7 +270,7 @@
 
   async function disconnectPuter() {
     if (state.host !== 'puter') return;
-    if (!window.confirm('¿Cerrar sesión de Puter? Volverás al modo local.')) return;
+    if (!await confirmDialog('¿Cerrar sesión de Puter? Volverás al modo local.', true)) return;
     cancelPendingSave();
     await persistAll(true); // último volcado a la nube antes de soltar la sesión
     var auth = puterAuthApi();
@@ -222,6 +281,9 @@
     var puterBackend = window.PromptVaultStorage.backends && window.PromptVaultStorage.backends.puter;
     if (puterBackend && typeof puterBackend._invalidateCache === 'function') {
       puterBackend._invalidateCache();
+    }
+    if (puterBackend && typeof puterBackend._invalidateRoot === 'function') {
+      puterBackend._invalidateRoot();
     }
     state.host = 'local';
     try {
@@ -459,10 +521,10 @@
         renderList();
         scheduleSave();
       });
-      delBtn.addEventListener('click', function (ev) {
+      delBtn.addEventListener('click', async function (ev) {
         ev.stopPropagation();
         var name = it.title || '(sin título)';
-        if (!window.confirm('¿Eliminar el prompt "' + name + '"? Esta acción no se puede deshacer.')) {
+        if (!await confirmDialog('¿Eliminar el prompt "' + name + '"? Esta acción no se puede deshacer.', true)) {
           wrap.classList.remove('is-actions-open');
           return;
         }
@@ -523,6 +585,7 @@
     els.fav.checked = !!item.favorite;
     setView('editor');
     renderList();
+    syncWindowTitle();
     requestAnimationFrame(function () {
       autoResizeTextarea();
       if (els.title) els.title.focus();
@@ -539,6 +602,7 @@
     els.fav.checked = false;
     setView('list');
     renderList();
+    syncWindowTitle();
   }
 
   function collectForm() {
@@ -693,7 +757,7 @@
     const item = state.items.find(function (it) { return it.id === state.selectedId; });
     if (!item) return;
     const name = item.title || '(sin título)';
-    if (!window.confirm('¿Eliminar el prompt "' + name + '"? Esta acción no se puede deshacer.')) {
+    if (!await confirmDialog('¿Eliminar el prompt "' + name + '"? Esta acción no se puede deshacer.', true)) {
       return;
     }
     haptic([60, 30]);
@@ -709,7 +773,31 @@
   }
 
   // ---------- import / export Excel ----------
-  function exportExcel() {
+  var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  // Dentro de Puter se usa el selector del sistema de archivos del usuario;
+  // fuera, el <input type="file"> oculto de index.html.
+  async function startImportExcel() {
+    var ui = puterUi();
+    if (!ui || typeof ui.showOpenFilePicker !== 'function') {
+      if (els.importExcelFile) els.importExcelFile.click();
+      return;
+    }
+    try {
+      var picked = await ui.showOpenFilePicker();
+      if (!picked) return; // cancelado
+      var item = Array.isArray(picked) ? picked[0] : picked;
+      if (!item) return;
+      // handleImportExcelFile sólo pasa el argumento a un FileReader, así que
+      // el Blob que devuelve read() le vale igual que un File.
+      handleImportExcelFile(await item.read());
+    } catch (err) {
+      console.error('showOpenFilePicker error', err);
+      flashHint('Error al abrir el archivo', true);
+    }
+  }
+
+  async function exportExcel() {
     try {
       if (!state.items.length) { flashHint('No hay prompts para exportar', true); return; }
       if (typeof window.XLSX === 'undefined') { flashHint('Librería Excel no disponible', true); return; }
@@ -731,7 +819,19 @@
       window.XLSX.utils.book_append_sheet(wb, ws, 'Prompts');
       // Marca de tiempo legible en vez de epoch en milisegundos.
       var stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
-      window.XLSX.writeFile(wb, 'promptvault-' + stamp + '.xlsx');
+      var filename = 'promptvault-' + stamp + '.xlsx';
+
+      var ui = puterUi();
+      if (ui && typeof ui.showSaveFilePicker === 'function') {
+        // XLSX.writeFile descarga con un <a download>, que el iframe sandbox de
+        // Puter puede bloquear: dentro de la app se guarda en el FS del usuario.
+        var buf = window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+        var blob = new Blob([buf], { type: XLSX_MIME });
+        var saved = await ui.showSaveFilePicker(blob, filename);
+        if (!saved) return; // el usuario canceló
+      } else {
+        window.XLSX.writeFile(wb, filename);
+      }
       flashHint('Excel exportado: ' + data.length + ' prompt' + (data.length === 1 ? '' : 's'));
     } catch (err) {
       console.error('exportExcel error', err);
@@ -919,9 +1019,11 @@
     var actions = [
       { label: 'Respaldar ahora', icon: '💾', run: function () { backupNow(); } },
       { label: 'Exportar Excel',  icon: '📊', run: function () { exportExcel(); } },
-      { label: 'Importar Excel',  icon: '📊', run: function () { if (els.importExcelFile) els.importExcelFile.click(); } }
+      { label: 'Importar Excel',  icon: '📊', run: function () { startImportExcel(); } }
     ];
-    if (state.host === 'puter') {
+    // Cerrar sesión desde dentro del escritorio de Puter no tiene sentido: la
+    // sesión es la de la ventana padre y tumbarla sólo rompería la app.
+    if (state.host === 'puter' && !isPuterApp()) {
       actions.push({ label: 'Cerrar sesión de Puter', icon: '🚪', run: function () { disconnectPuter(); } });
     }
     if (document.getElementById('more-menu-list') || document.getElementById('bottom-sheet')) {
@@ -1115,6 +1217,7 @@
     item.favorite = form.favorite;
     item.updatedAt = nowIso();
     updateListItem(item);
+    syncWindowTitle();
     refreshTagFilterOptionsPreservingValue();
     var hasTags = (item.tags || []).join(',');
     if (hadFav !== item.favorite || hadTags !== hasTags || state.filter.q) {
@@ -1186,7 +1289,7 @@
     if (els.deleteBtn) els.deleteBtn.addEventListener('click', deleteSelected);
     if (els.exportExcelBtn) els.exportExcelBtn.addEventListener('click', exportExcel);
     if (els.importExcelBtn && els.importExcelFile) {
-      els.importExcelBtn.addEventListener('click', function () { els.importExcelFile.click(); });
+      els.importExcelBtn.addEventListener('click', function () { startImportExcel(); });
       els.importExcelFile.addEventListener('change', function () {
         const f = els.importExcelFile.files && els.importExcelFile.files[0];
         handleImportExcelFile(f);
@@ -1503,14 +1606,54 @@
     }
   }
 
+  // Eventos que sólo existen dentro de Puter. Como bindEvents(), se llama una
+  // sola vez desde bootstrap(): volver a llamarla duplicaría los handlers.
+  function bindPuterAppEvents() {
+    var ui = puterUi();
+    if (!ui) return;
+
+    // Cuarta red del debounce, junto a visibilitychange y pagehide: ninguno de
+    // los dos se dispara al cerrar una ventana de Puter, así que sin esto la
+    // última edición se quedaba en el temporizador de 600 ms y se perdía.
+    if (typeof ui.onWindowClose === 'function') {
+      ui.onWindowClose(async function () {
+        try { await flushPendingSave(); }
+        catch (err) { console.error('flush on close error', err); }
+        finally {
+          if (typeof ui.exit === 'function') ui.exit();
+          else if (window.puter && typeof window.puter.exit === 'function') window.puter.exit();
+        }
+      });
+    }
+
+    // Abrir un .xlsx desde el escritorio de Puter (filetypeAssociations del
+    // manifiesto) entra por aquí y va al mismo importador que el botón.
+    if (typeof ui.onLaunchedWithItems === 'function') {
+      ui.onLaunchedWithItems(async function (items) {
+        var item = Array.isArray(items) ? items[0] : items;
+        if (!item || typeof item.read !== 'function') return;
+        try { handleImportExcelFile(await item.read()); }
+        catch (err) {
+          console.error('onLaunchedWithItems error', err);
+          toast('No se pudo abrir el archivo', true);
+        }
+      });
+    }
+  }
+
   // ---------- bootstrap ----------
   async function bootstrap() {
     // Detectar Puter. Si el SDK expone auth.isSignedIn() lo consultamos para
     // evitar un loadAll condenado al fallo; si no, mantenemos el optimismo
     // histórico y dejamos que el loadAll haga el probe real.
+    // Dentro de Puter (env 'app'/'gui') no hay nada que consultar: la sesión la
+    // resuelve el handshake con la ventana padre antes de que arranquemos.
+    var inApp = isPuterApp();
     var hasPuter = puterAvailable();
-    var usePuter = hasPuter && (canCheckSignedIn() ? puterSignedIn() : true);
+    var usePuter = inApp || (hasPuter && (canCheckSignedIn() ? puterSignedIn() : true));
     state.host = usePuter ? 'puter' : 'local';
+    // Marca para el CSS, mismo patrón que data-theme.
+    if (inApp) document.documentElement.dataset.puterApp = 'true';
     setStatus(state.host === 'puter' ? 'conectando a Puter…' : 'cargando datos locales…');
     try {
       const data = await window.PromptVaultStorage.loadAll(state.host);
@@ -1522,6 +1665,10 @@
       // para que el usuario no pierda la sesión de trabajo.
       if (state.host === 'puter') {
         console.warn('Puter no disponible; cambiando a modo local');
+        // Fuera de Puter esto es lo esperado (sesión no iniciada). Dentro de la
+        // app es un fallo real y el usuario tiene que enterarse: si no, vería
+        // una lista vacía y creería que ha perdido los prompts.
+        if (inApp) toast('No se pudo leer tu cuenta de Puter; trabajando en local', true);
         state.host = 'local';
         try {
           const data = await window.PromptVaultStorage.loadAll(state.host);
@@ -1556,6 +1703,8 @@
     // Su visibilidad real la decide el CSS (móvil + vista lista).
     if (els.newFab) els.newFab.hidden = false;
     updateConnectionUI();
+    bindPuterAppEvents();
+    syncWindowTitle();
     state.initialized = true;
     // respaldo automático silencioso al cargar (sólo si el backend elegido funciona)
     try {

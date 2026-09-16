@@ -84,6 +84,10 @@ body {
   flex: 0 0 auto;
 }
 .topbar h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: 0.2px; }
+/* Dentro de Puter la ventana ya tiene su barra de título (y app.js la mantiene
+   sincronizada con el prompt abierto): repetirlo aquí son dos títulos pegados
+   robando altura. La marca data-puter-app la pone bootstrap(). */
+html[data-puter-app] .topbar-title { display: none; }
 .status {
   color: var(--text-dim);
   font-size: 12px;

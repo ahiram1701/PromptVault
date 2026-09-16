@@ -36,7 +36,9 @@ $dist = Join-Path $root 'dist'
 
 # Archivos que la app realmente sirve. index.html referencia exactamente estos.
 # Deliberadamente NO se despliegan: app.full.js, app.js.v0.9.bak,
-# .app.js.bak-pre-v0.9.3 (respaldos muertos, ~76 KB), ni CLAUDE.md / README.md /
+# .app.js.bak-pre-v0.9.3 (respaldos muertos, ~76 KB); app-manifest.js y
+# register-app.html (herramientas de desarrollo: registran la app de Puter
+# desde localhost y no pintan nada en produccion); ni CLAUDE.md / README.md /
 # .claude / .git.
 $files = @(
   'index.html',

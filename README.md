@@ -33,6 +33,8 @@ promptvault/
 ├── storage.js        # persistencia (backends puter / local)
 ├── styles.css        # tema oscuro, responsive
 ├── deploy.ps1        # despliegue a Puter
+├── app-manifest.js   # metadatos de la app de Puter (no se despliega)
+├── register-app.html # registra/actualiza la app en Puter (no se despliega)
 ├── vendor/
 │   ├── fuse.min.js       # búsqueda fuzzy
 │   └── xlsx.full.min.js  # import/export Excel
@@ -70,6 +72,35 @@ El script arma un `dist/` limpio con solo lo que la app sirve, lo publica con el
 
 El sitio se sirve desde `/Ahiram1701/Public/promptvault`. Ojo: el CLI hace despliegues versionados —cada deploy sube a su propia carpeta y reapunta el subdominio—, así que tras el primer `deploy.ps1` la ruta de origen cambiará. Los datos no se ven afectados: viven en `~/PromptVault/`, fuera del directorio del sitio.
 
+## Como app de Puter
+
+Además de existir como sitio, PromptVault se registra como **app** de Puter: se abre desde el escritorio en una ventana propia, con icono, en `https://puter.com/app/promptvault`.
+
+Registrar la app **no cambia el despliegue**: los metadatos apuntan al mismo `witty-meerkat-9381.puter.site`, así que el ciclo sigue siendo `./deploy.ps1` y la app registrada sirve siempre la última versión. Sólo hay que volver a registrar cuando cambian los metadatos (`app-manifest.js`).
+
+Dos cosas que conviene tener claras:
+
+- **El sitio sigue haciendo falta.** Puter carga `indexURL` en un iframe, no guarda una copia del código: el subdominio `puter.site` *es* la app. Si lo borras, la ventana se abre en blanco.
+- **El CLI no puede registrar apps.** `puter app` es de sólo lectura (`list`, `get`); despliega sitios y workers, no apps. El registro se hace siempre desde una página con sesión: `register-app.html`, el Dev Center (`puter.com/app/dev-center`) o `puter.apps.*` a mano.
+
+Para registrarla o actualizarla:
+
+```
+python -m http.server 8080
+```
+
+y abrir `http://localhost:8080/register-app.html` → **Registrar / actualizar app**. La herramienta pide sesión, solicita el permiso `apps`, convierte `apple-touch-icon.png` en el data URI que Puter espera y hace `create` o `update` según exista ya. Es idempotente. Necesita servirse por http: con `file://` el `fetch` del icono falla.
+
+`app-manifest.js` y `register-app.html` son herramientas de desarrollo y **no se despliegan** a propósito (no están en la lista de `deploy.ps1`).
+
+Dentro de Puter la app cambia de comportamiento:
+
+- La sesión ya viene abierta: no hay botón de nube ni opción de cerrar sesión, y la barra de estado dice «app de Puter».
+- Las confirmaciones usan los diálogos nativos de Puter en vez de `window.confirm`.
+- Exportar Excel abre el selector de guardado de Puter (el iframe puede bloquear las descargas del navegador) e importar abre el selector de archivos.
+- Un `.xlsx` abierto desde el escritorio de Puter se importa directamente (`filetypeAssociations` en el manifiesto). Si molesta ver PromptVault en el menú de cada hoja de cálculo, vacía ese array y vuelve a registrar.
+- El título de la ventana sigue al prompt abierto, y al cerrarla se vuelca el guardado pendiente antes de salir.
+
 ## Modelo de datos
 
 Cada prompt es un objeto JSON:
@@ -81,6 +112,8 @@ Cada prompt es un objeto JSON:
 `storage.js` expone `window.PromptVaultStorage` con dos backends intercambiables, elegidos en tiempo de ejecución según haya sesión de Puter o no.
 
 **En Puter** (`~/PromptVault/`):
+
+La ruta no se da por supuesta. La documentación de Puter dice que los paths relativos se resuelven contra el «directorio raíz de la app» y que una app registrada vive en su sandbox `~/AppData/<app-id>/`. **Medido, no es lo que pasa aquí:** la app registrada lee la misma carpeta que el sitio. Aun así `storage.js` resuelve la raíz una sola vez —ruta absoluta de `PromptVault` si ya existe, y si no la pide sobre el home del usuario— para que un cambio futuro en cómo Puter asigna raíces no separe en silencio los dos contextos.
 
 - `prompts/<id>.json` — un archivo por prompt
 - `prompts/index.json` — `{ ids: [], updatedAt }`

@@ -10,6 +10,19 @@
         "8080"
       ],
       "port": 8080
+    },
+    {
+      "name": "promptvault-node",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "--yes",
+        "http-server",
+        ".",
+        "-p",
+        "8081",
+        "-c-1"
+      ],
+      "port": 8081
     }
   ]
 }

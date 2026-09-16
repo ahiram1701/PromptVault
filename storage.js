@@ -8,11 +8,8 @@
 (function (global) {
   'use strict';
 
-  // Puter.js v2: paths relativos al home del usuario (sin '~').
+  // Nombre de la carpeta raíz. NO es la ruta final: ver resolvePuterRoot().
   var PUTER_ROOT = 'PromptVault';
-  var PUTER_PROMPTS_DIR = PUTER_ROOT + '/prompts';
-  var PUTER_INDEX_PATH = PUTER_PROMPTS_DIR + '/index.json';
-  var PUTER_BACKUPS_DIR = PUTER_ROOT + '/Backups';
   var LOCAL_INDEX_KEY = 'promptvault:index';
   var LOCAL_BACKUP_KEY = 'promptvault:backup'; // snapshot más reciente
   var LOCAL_BACKUP_HISTORY_KEY = 'promptvault:backups'; // historial ligero (últimos 5)
@@ -28,10 +25,84 @@
     return 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
   }
 
+  // -------------------- resolución de la raíz en Puter --------------------
+  // Puter resuelve los paths relativos contra el "directorio raíz de la app",
+  // que para una app registrada es su sandbox ~/AppData/<app-id>/ y para el
+  // sitio web puede ser otro. Dejarlo al azar significa que abrir PromptVault
+  // como app registrada mostraría una lista vacía aunque los prompts sigan
+  // donde estaban. Así que se resuelve UNA vez y se fija:
+  //
+  //   1. Si 'PromptVault' ya existe donde el runtime lo resuelve, se usa su
+  //      ruta ABSOLUTA. Lo que hoy funciona se queda exactamente igual.
+  //   2. Si no existe y estamos dentro de Puter, se pide permiso sobre la
+  //      carpeta 'PromptVault' del home del usuario: es el contrato que
+  //      documenta el README y lo que mantiene los prompts visibles en el
+  //      gestor de archivos en vez de enterrados en AppData.
+  //   3. Si nada de eso sale, se cae al nombre relativo de siempre.
+  var _puterRoot = null;
+  var _puterRootPromise = null;
+
+  function puterIsApp() {
+    var env = global.puter && global.puter.env;
+    return env === 'app' || env === 'gui';
+  }
+
+  function isAuthError(msg) {
+    return /Subject does not exist|not authenticated|auth|unauthorized|forbidden|401|403/i.test(msg);
+  }
+
+  async function resolvePuterRoot() {
+    if (_puterRoot) return _puterRoot;
+    if (_puterRootPromise) return _puterRootPromise;
+    _puterRootPromise = (async function () {
+      var chosen = PUTER_ROOT;
+      try {
+        var st = await global.puter.fs.stat(PUTER_ROOT);
+        if (st && st.path) chosen = st.path;
+      } catch (err) {
+        var msg = (err && err.message) || String(err);
+        if (isAuthError(msg)) {
+          // Sin sesión no hay nada que resolver: que el llamador lo trate como
+          // el resto de errores de auth y caiga a local.
+          _puterRootPromise = null;
+          throw new Error('PUTER_AUTH: ' + msg);
+        }
+        if (puterIsApp() && global.puter.perms && typeof global.puter.perms.request === 'function') {
+          try {
+            var granted = await global.puter.perms.request('folder', { name: PUTER_ROOT, access: 'write' });
+            if (granted && typeof granted === 'string') chosen = granted;
+          } catch (permErr) {
+            console.warn('perms.request folder warning', permErr);
+          }
+        }
+      }
+      _puterRoot = chosen;
+      return chosen;
+    })();
+    return _puterRootPromise;
+  }
+
+  function invalidatePuterRoot() {
+    _puterRoot = null;
+    _puterRootPromise = null;
+  }
+
+  // Todas las rutas se derivan de la raíz resuelta, nunca de constantes sueltas.
+  async function puterPaths() {
+    var root = await resolvePuterRoot();
+    return {
+      root: root,
+      prompts: root + '/prompts',
+      index: root + '/prompts/index.json',
+      backups: root + '/Backups'
+    };
+  }
+
   // -------------------- helpers Puter --------------------
   async function puterEnsureDirs() {
     if (!global.puter || !global.puter.fs) throw new Error('Puter.fs no disponible');
-    var dirs = [PUTER_ROOT, PUTER_PROMPTS_DIR, PUTER_BACKUPS_DIR];
+    var p = await puterPaths();
+    var dirs = [p.root, p.prompts, p.backups];
     for (var i = 0; i < dirs.length; i++) {
       try { await global.puter.fs.mkdir(dirs[i]); }
       catch (err) {
@@ -52,8 +123,10 @@
       return JSON.stringify(data);
     } catch (err) {
       var msg = (err && err.message) || String(err);
-      // Errores de autenticación / sesión NO deben confundirse con "archivo no existe".
-      if (/Subject does not exist|not authenticated|auth|unauthorized|forbidden|401|403/i.test(msg)) {
+      // Errores de autenticación / sesión NO deben confundirse con "archivo no
+      // existe": si los dos criterios se separan, una sesión caída pasa por
+      // "no hay prompts" y parece pérdida de datos. Un único isAuthError().
+      if (isAuthError(msg)) {
         throw new Error('PUTER_AUTH: ' + msg);
       }
       // Puter.js v2 lanza mensajes distintos según versión/estado.
@@ -90,7 +163,7 @@
     throw lastErr;
   }
   async function puterListFromIndex() {
-    var text = await puterReadText(PUTER_INDEX_PATH);
+    var text = await puterReadText((await puterPaths()).index);
     if (!text) return { ids: [], updatedAt: null };
     try {
       var idx = JSON.parse(text);
@@ -100,7 +173,7 @@
   }
   async function puterWriteIndex(ids) {
     var payload = JSON.stringify({ ids: ids, updatedAt: nowIso() }, null, 2);
-    await puterWriteAtomic(PUTER_INDEX_PATH, payload);
+    await puterWriteAtomic((await puterPaths()).index, payload);
   }
   async function puterCopyTo(srcPath, destPath) {
     // puter.fs.copy conserva contenido entre rutas; fallback a read+write si no existe.
@@ -120,16 +193,21 @@
     _cacheAt: 0,
     _CACHE_TTL: 30000,
     _invalidateCache() { this._cache = null; this._cacheAt = 0; },
+    // Aparte del caché de lista: la raíz resuelta sólo caduca al cambiar de
+    // sesión (otro usuario, otro home). Meterlo en _invalidateCache haría un
+    // stat de más en cada guardado.
+    _invalidateRoot() { invalidatePuterRoot(); },
     async list() {
       if (this._cache && (Date.now() - this._cacheAt) < this._CACHE_TTL) {
         return this._cache.slice();
       }
       await puterEnsureDirs();
+      var promptsDir = (await puterPaths()).prompts;
       var idx = await puterListFromIndex();
       var out = [];
       for (var i = 0; i < idx.ids.length; i++) {
         var id = idx.ids[i];
-        var path = PUTER_PROMPTS_DIR + '/' + id + '.json';
+        var path = promptsDir + '/' + id + '.json';
         var text = await puterReadText(path);
         if (!text) continue;
         try { out.push(JSON.parse(text)); } catch (_) {}
@@ -139,7 +217,7 @@
       return out;
     },
     async get(id) {
-      var text = await puterReadText(PUTER_PROMPTS_DIR + '/' + id + '.json');
+      var text = await puterReadText((await puterPaths()).prompts + '/' + id + '.json');
       return text ? JSON.parse(text) : null;
     },
     async put(prompt) {
@@ -152,7 +230,7 @@
       // Pisarlo dejaba memoria y disco con marcas distintas, y la lista se
       // ordena justamente por updatedAt.
       if (!next.updatedAt) next.updatedAt = now;
-      var path = PUTER_PROMPTS_DIR + '/' + next.id + '.json';
+      var path = (await puterPaths()).prompts + '/' + next.id + '.json';
       await puterWriteAtomic(path, JSON.stringify(next, null, 2));
       var idx = await puterListFromIndex();
       if (idx.ids.indexOf(next.id) === -1) idx.ids.push(next.id);
@@ -162,7 +240,7 @@
       return next;
     },
     async delete(id) {
-      var path = PUTER_PROMPTS_DIR + '/' + id + '.json';
+      var path = (await puterPaths()).prompts + '/' + id + '.json';
       try { await global.puter.fs.delete(path); }
       catch (err) {
         var msg = (err && err.message) || String(err);
@@ -465,9 +543,11 @@
     if (!global.puter || !global.puter.fs) {
       return { copies: 0, snapshot: snapshot };
     }
+    var backupsDir = null;
     try {
       await puterEnsureDirs();
-      var destDir = PUTER_BACKUPS_DIR + '/' + stamp;
+      backupsDir = (await puterPaths()).backups;
+      var destDir = backupsDir + '/' + stamp;
       try { await global.puter.fs.mkdir(destDir); }
       catch (err) {
         var msg = (err && err.message) || String(err);
@@ -484,7 +564,7 @@
     } catch (err) {
       console.warn('backup puter: no se pudo crear snapshot', err);
     }
-    return { copies: copies, snapshot: snapshot, mirror: PUTER_BACKUPS_DIR };
+    return { copies: copies, snapshot: snapshot, mirror: backupsDir || (PUTER_ROOT + '/Backups') };
   }
 
   // -------------------- factory --------------------
@@ -513,9 +593,12 @@
     backends: { puter: PuterBackend, local: LocalBackend },
     _internals: {
       PUTER_ROOT: PUTER_ROOT,
-      PUTER_PROMPTS_DIR: PUTER_PROMPTS_DIR,
-      PUTER_INDEX_PATH: PUTER_INDEX_PATH,
-      PUTER_BACKUPS_DIR: PUTER_BACKUPS_DIR,
+      // Las rutas reales dependen de dónde resuelva Puter la raíz, así que se
+      // exponen las funciones en vez de constantes que mentirían.
+      puterPaths: puterPaths,
+      resolvePuterRoot: resolvePuterRoot,
+      invalidatePuterRoot: invalidatePuterRoot,
+      resolvedPuterRoot: function () { return _puterRoot; },
       LOCAL_INDEX_KEY: LOCAL_INDEX_KEY,
       LOCAL_BACKUP_KEY: LOCAL_BACKUP_KEY,
       LOCAL_BACKUP_HISTORY_KEY: LOCAL_BACKUP_HISTORY_KEY,
