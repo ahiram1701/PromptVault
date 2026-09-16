@@ -12,6 +12,7 @@
     app: document.getElementById('app'),
     list: document.getElementById('prompt-list'),
     promptList: document.getElementById('prompt-list'),
+    listCount: document.getElementById('list-count'),
     search: document.getElementById('search'),
     tagFilter: document.getElementById('tag-filter'),
     showFav: document.getElementById('show-favorites'),
@@ -425,10 +426,25 @@
     return items;
   }
 
+  function renderListCount(shown) {
+    if (!els.listCount) return;
+    const total = state.items.length;
+    if (total === 0) {
+      els.listCount.textContent = '';
+      els.listCount.hidden = true;
+      return;
+    }
+    const filtered = !!(state.filter.q || state.filter.tag || state.filter.onlyFav);
+    const noun = total === 1 ? 'prompt' : 'prompts';
+    els.listCount.textContent = filtered ? (shown + ' de ' + total + ' ' + noun) : (total + ' ' + noun);
+    els.listCount.hidden = false;
+  }
+
   function renderList() {
     if (!els.list) return;
     const prevScroll = els.list.scrollTop || 0;
     const items = getVisibleItems();
+    renderListCount(items.length);
     els.list.innerHTML = '';
     if (items.length === 0) {
       var li = document.createElement('li');

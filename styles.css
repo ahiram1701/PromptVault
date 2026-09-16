@@ -185,6 +185,12 @@ html[data-puter-app] .topbar-title { display: none; }
   color: var(--text-dim);
   margin-top: 2px;
 }
+.list-count {
+  padding: 4px 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .prompt-empty {
   padding: 14px;
   color: var(--text-dim);
