@@ -111,15 +111,18 @@
   // window.confirm puede estar bloqueado dentro del iframe sandbox de Puter y
   // devolver false en silencio: el borrado de un prompt simplemente no pasaría.
   // En modo app se usa el diálogo nativo; fuera, el del navegador de siempre.
+  // puter.ui.alert devuelve el value del botón leído de un atributo del DOM,
+  // es decir como string: con value: true llegaba 'true' y `=== true` convertía
+  // "Aceptar" en "Cancelar", así que ningún botón de eliminar hacía nada.
   async function confirmDialog(message, danger) {
     var ui = puterUi();
     if (ui && typeof ui.alert === 'function') {
       try {
         var res = await ui.alert(message, [
-          { label: 'Cancelar', value: false },
-          { label: 'Aceptar', value: true, type: danger ? 'danger' : 'primary' }
+          { label: 'Cancelar', value: 'cancel' },
+          { label: 'Aceptar', value: 'ok', type: danger ? 'danger' : 'primary' }
         ]);
-        return res === true;
+        return res === true || String(res) === 'ok';
       } catch (err) {
         console.warn('puter.ui.alert warning', err);
       }

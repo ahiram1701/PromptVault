@@ -90,6 +90,8 @@ Two consequences worth knowing before reaching for the CLI or deleting the site:
 
 **Two browser APIs are avoided in app mode as a precaution** — neither has been observed failing against the live app, but both fail *silently* if the iframe sandbox does block them, which is why they were not left to chance. `window.confirm` can return `false` without asking, which would make deleting a prompt quietly do nothing; every confirmation goes through `confirmDialog()`, which uses `puter.ui.alert` in app mode and `window.confirm` outside. `XLSX.writeFile` downloads via an `<a download>` that a sandbox can block, so `exportExcel()` switches to `puter.ui.showSaveFilePicker`; `startImportExcel()` is the mirror image with `showOpenFilePicker`, and is also what `filetypeAssociations: ['.xlsx']` + `puter.ui.onLaunchedWithItems` feed. If you ever confirm the sandbox actually permits these, the native paths are still the better UX — don't revert them, just correct this note.
 
+`puter.ui.alert` resolves with the clicked button's `value` read back from a DOM attribute — **a string**. `confirmDialog()` once used `value: true` and checked `res === true`, so "Aceptar" came back as `'true'`, counted as cancel, and every delete button silently did nothing. Use string values (`'ok'` / `'cancel'`) and compare as strings.
+
 `bindPuterAppEvents()` is one-shot like `bindEvents()` — never call it twice.
 
 ### Connecting / Disconnecting from Puter (`app.js`)
